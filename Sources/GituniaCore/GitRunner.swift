@@ -4,6 +4,27 @@ import Foundation
 public struct GitRunner: Sendable {
     public init() {}
 
+    /// The git binary, resolved once per run: the first `git` on PATH, except that `/usr/bin/git`
+    /// (what a Finder-launched app finds) is Apple's xcrun shim, which re-resolves the developer
+    /// dir on every launch — measured ~5ms per call, 105–165ms vs ~60ms for a whole commit. Asking
+    /// `xcrun --find git` once yields the very binary the shim would exec, so it's the same git.
+    static let executable: String = {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        let found = path.split(separator: ":").map { "\($0)/git" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/git"
+        guard found == "/usr/bin/git" else { return found }
+        let xcrun = Process(), out = Pipe()
+        xcrun.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        xcrun.arguments = ["--find", "git"]
+        xcrun.standardOutput = out
+        xcrun.standardError = FileHandle.nullDevice
+        guard (try? xcrun.run()) != nil else { return found }
+        let real = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        xcrun.waitUntilExit()
+        return xcrun.terminationStatus == 0 && FileManager.default.isExecutableFile(atPath: real) ? real : found
+    }()
+
     /// Repo-local `.git/config` can point `core.fsmonitor`, `diff.external` or a textconv filter at
     /// an arbitrary command, which then runs with no user action beyond opening/refreshing the repo
     /// (C1). `-c core.fsmonitor=false` is safe to pass on every invocation — it only matters to the
@@ -17,7 +38,7 @@ public struct GitRunner: Sendable {
         // `.git/index`'s mtime, which otherwise re-triggers the FSEvents watcher on every refresh.
         // Safe on every call, so it lives in the fixed prefix rather than being conditioned on the
         // subcommand.
-        let fixedPrefix = ["git", "--no-optional-locks", "-c", "core.quotePath=false", "-c", "core.fsmonitor=false"]
+        let fixedPrefix = ["--no-optional-locks", "-c", "core.quotePath=false", "-c", "core.fsmonitor=false"]
         var git = fixedPrefix + args
         guard let sub = args.first else { return git }
         let diffLike = sub == "diff" || sub == "show" || sub == "log"
@@ -55,7 +76,7 @@ public struct GitRunner: Sendable {
         let result: ProcessResult
         do {
             result = try await ProcessRunner.run(
-                executable: "/usr/bin/env",
+                executable: Self.executable,
                 arguments: Self.hardenedArguments(args),
                 currentDirectory: repo,
                 environment: Self.environment(literalPathspecs: literalPathspecs).merging(extraEnvironment) { $1 },

@@ -57,6 +57,19 @@ extension RepositoryStore {
         Int(((try? await git.run(["rev-list", "--count"] + args, in: url)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    /// `git merge-base --is-ancestor`: exit 0 = yes, 1 = no, anything else (unresolvable ref, gc'd
+    /// object) = `nil`, unknown — `try?` alone would read that as "no".
+    func isAncestor(_ ancestor: String, of descendant: String) async -> Bool? {
+        do {
+            try await git.run(["merge-base", "--is-ancestor", ancestor, descendant], in: url)
+            return true
+        } catch let error as GitError where error.exitCode == 1 {
+            return false
+        } catch {
+            return nil
+        }
+    }
+
     public func headHash() async -> String? {
         (try? await git.run(["rev-parse", "HEAD"], in: url))?.trimmingCharacters(in: .whitespacesAndNewlines)
     }

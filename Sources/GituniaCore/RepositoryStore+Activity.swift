@@ -45,8 +45,7 @@ extension RepositoryStore {
                     // Only what no other remote branch already has — not the branch's whole history.
                     let short = change.ref.split(separator: "/", maxSplits: 1).last.map(String.init) ?? change.ref
                     range = [newOID, "--not", "--exclude=\(change.ref)", "--exclude=\(short)", "--remotes"]
-                } else if let oldOID = change.oldOID,
-                          (try? await git.run(["merge-base", "--is-ancestor", oldOID, newOID], in: url)) == nil {
+                } else if let oldOID = change.oldOID, await isAncestor(oldOID, of: newOID) == false {
                     kind = .forcePushed
                 }
                 let log = (try? await git.run(["log", "-n", "50", "--format=\(RemoteActivity.logFormat)"] + range, in: url)) ?? ""

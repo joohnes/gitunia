@@ -303,17 +303,29 @@ public final class RepositoryStore: Identifiable {
         }
     }
 
-    /// Returns true on success. Hook failures land in `lastError`.
-    public func commit(_ message: CommitMessage, amend: Bool = false) async -> Bool {
+    /// Returns true on success. Hook failures land in `lastError`. `expectedHead` (amend only) is
+    /// the commit whose message the user saw — see `headMoved`.
+    public func commit(_ message: CommitMessage, amend: Bool = false, expectedHead: String? = nil) async -> Bool {
         var args = ["commit", "-q", "-F", "-"]
         if amend { args.append("--amend") }
+        if await headMoved(from: expectedHead, args: args, what: "amended") { return false }
         return await perform(args, stdin: message.fullText)
+    }
+
+    /// `true` (with `lastError` set) when HEAD is no longer `expected` — an agent committed while a
+    /// confirmation, the Reword sheet or the Amend toggle was up, and acting now would hit a
+    /// different commit than the one the user looked at. `nil` means "whatever HEAD is now".
+    /// ponytail: rev-parse then act is a few-ms window, not atomic; git has no compare-and-swap for these.
+    func headMoved(from expected: String?, args: [String], what: String) async -> Bool {
+        guard let expected, await headHash() != expected else { return false }
+        lastError = GitError(args: args, exitCode: -1, stderr: "HEAD has moved since you chose that commit — nothing was \(what).")
+        return true
     }
 
     /// Rewrites only HEAD's message: `--amend --only` with no paths ignores the index, so staged
     /// changes stay staged instead of being swept into the amend, and the tree is unchanged.
     /// `stripTrailers` is the UI's `stripAgentTrailers` setting (the store doesn't see settings).
-    public func rewordHead(_ message: CommitMessage, stripTrailers: Bool) async -> Bool {
+    public func rewordHead(_ message: CommitMessage, stripTrailers: Bool, expectedHead: String? = nil) async -> Bool {
         let args = ["commit", "-q", "--amend", "--only", "--allow-empty", "-F", "-"]
         if let op = operation {
             lastError = GitError(args: args, exitCode: -1, stderr: "A \(op.label) is in progress — finish or abort it before rewording.")
@@ -323,6 +335,7 @@ public final class RepositoryStore: Identifiable {
             lastError = GitError(args: args, exitCode: -1, stderr: "There is no commit to reword yet.")
             return false
         }
+        if await headMoved(from: expectedHead, args: args, what: "reworded") { return false }
         return await perform(args, stdin: (stripTrailers ? TrailerStripper.strip(message) : message).fullText)
     }
 
@@ -330,7 +343,16 @@ public final class RepositoryStore: Identifiable {
     /// blank lines trimmed) — the same shape `CommitMessage` uses for a draft. `nil` when HEAD
     /// has no commits.
     public func lastCommitMessage() async -> CommitMessage? {
-        guard let raw = try? await git.run(["log", "-1", "--pretty=%B"], in: url) else { return nil }
+        await lastCommit()?.message
+    }
+
+    /// HEAD's hash and message from one `git log`, so the hash is exactly the commit the message
+    /// came from — what Reword/Amend pass back as `expectedHead`.
+    public func lastCommit() async -> (hash: String, message: CommitMessage)? {
+        guard let out = try? await git.run(["log", "-1", "--pretty=%H%n%B"], in: url),
+              let newline = out.firstIndex(of: "\n") else { return nil }
+        let hash = String(out[..<newline])
+        let raw = String(out[out.index(after: newline)...])
         var lines = raw.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard !lines.isEmpty else { return nil }
         let title = lines.removeFirst()
@@ -338,7 +360,7 @@ public final class RepositoryStore: Identifiable {
             lines.removeFirst()
         }
         let body = lines.joined(separator: "\n").trimmingCharacters(in: CharacterSet(charactersIn: "\n"))
-        return CommitMessage(title: title, body: body)
+        return (hash, CommitMessage(title: title, body: body))
     }
 
     /// `git reset --soft HEAD~1`: drops the last commit but leaves the index untouched, so
@@ -352,14 +374,9 @@ public final class RepositoryStore: Identifiable {
     /// (the ⌘K action) pass nil.
     @discardableResult
     public func undoLastCommit(expectedHead: String? = nil) async -> Bool {
-        if let expectedHead {
-            guard await headHash() == expectedHead else {
-                lastError = GitError(args: ["reset", "--soft", "HEAD~1"], exitCode: -1,
-                                     stderr: "HEAD has moved since you chose that commit — nothing was undone.")
-                return false
-            }
-        }
-        return await perform(["reset", "--soft", "HEAD~1"])
+        let args = ["reset", "--soft", "HEAD~1"]
+        if await headMoved(from: expectedHead, args: args, what: "undone") { return false }
+        return await perform(args)
     }
 
     // MARK: - Clean untracked files (git clean)
@@ -600,9 +617,14 @@ public final class RepositoryStore: Identifiable {
     }
 
     public func stagedDiffForAI() async -> (stat: String, diff: String) {
-        let stat = (try? await git.run(["diff", "--cached", "--stat"], in: url)) ?? ""
-        let diff = (try? await git.run(["diff", "--cached"], in: url)) ?? ""
-        return (stat, diff)
+        async let stat = (try? await git.run(["diff", "--cached", "--stat"], in: url)) ?? ""
+        async let diff = stagedDiff()
+        return (await stat, await diff)
+    }
+
+    /// `git diff --cached` — what the commit gate scans for secrets.
+    public func stagedDiff() async -> String {
+        (try? await git.run(["diff", "--cached"], in: url)) ?? ""
     }
 
     @discardableResult

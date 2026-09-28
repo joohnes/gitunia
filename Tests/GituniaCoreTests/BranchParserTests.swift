@@ -30,3 +30,21 @@ final class BranchPinningTests: XCTestCase {
         XCTAssertFalse(BranchInfo(name: "mainline", isCurrent: false, isRemote: false).isDefaultBranch)
     }
 }
+
+final class DashRefTests: XCTestCase {
+    /// `git update-ref refs/heads/--output=x` succeeds even though `git branch` refuses the name;
+    /// passed on as a bare revision, `git log` would read it as `--output` and write a file.
+    func testParserDropsRefsThatLookLikeOptions() {
+        let out = "refs/heads/--output=/tmp/x\t \nrefs/heads/-n\t \nrefs/heads/ok\t*\nrefs/remotes/origin/-x\t \n"
+        XCTAssertEqual(BranchParser.parse(out).map(\.name), ["ok", "origin/-x"])
+    }
+
+    @MainActor
+    func testHistoryNeverTreatsBranchAsOption() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let target = url.appendingPathComponent("pwned.txt")
+        let store = RepositoryStore(url: url)
+        _ = await store.history(branch: "--output=\(target.path)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+}

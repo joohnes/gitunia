@@ -10,7 +10,9 @@ public enum CleanPreviewParser {
     public static func parse(_ output: String) -> [String] {
         output.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
             guard line.hasPrefix(prefix) else { return nil }
-            return String(line.dropFirst(prefix.count))
+            // Quoted like every other git path (`"weird\"name.txt"`); passed back quoted, the
+            // literal pathspec matches nothing and `clean -f` silently removes nothing.
+            return GitQuotedPath.decode(String(line.dropFirst(prefix.count)))
         }
     }
 }

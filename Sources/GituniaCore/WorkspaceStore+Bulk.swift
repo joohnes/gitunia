@@ -54,10 +54,10 @@ extension WorkspaceStore {
     }
 
     /// `silent: true` (auto-fetch) runs the same work without ever publishing `bulk`, so no progress
-    /// strip flashes on screen for a background tick.
+    /// strip flashes on screen for a background tick — and goes through `autoFetch()`'s guard.
     @discardableResult
     public func fetchAll(silent: Bool = false, filter: (RepositoryStore) -> Bool = { _ in true }) async -> BulkOperation {
-        await runBulk(.fetch, silent: silent, skip: { !filter($0) }) { await $0.fetch() }
+        await runBulk(.fetch, silent: silent, skip: { !filter($0) }) { silent ? await $0.autoFetch() : await $0.fetch() }
     }
 
     /// Repositories without an upstream are skipped (nothing to pull from, so not a failure).

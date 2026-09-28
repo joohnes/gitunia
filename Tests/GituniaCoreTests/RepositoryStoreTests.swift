@@ -466,6 +466,27 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertEqual(last?.title, "init")
     }
 
+    /// An agent committing while the Reword sheet / Amend toggle is open must not get its commit
+    /// rewritten with a message meant for the one the user looked at.
+    @MainActor
+    func testRewordAndAmendRefuseWhenHeadMoved() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let git = GitRunner()
+        let store = RepositoryStore(url: url)
+        let last0 = await store.lastCommit()
+        let seen = try XCTUnwrap(last0)
+        XCTAssertEqual(seen.message.title, "init")
+        _ = try await git.run(["commit", "-q", "--allow-empty", "-m", "agent"], in: url)
+
+        let reworded = await store.rewordHead(CommitMessage(title: "mine"), stripTrailers: false, expectedHead: seen.hash)
+        XCTAssertFalse(reworded)
+        XCTAssertNotNil(store.lastError)
+        let amended = await store.commit(CommitMessage(title: "mine"), amend: true, expectedHead: seen.hash)
+        XCTAssertFalse(amended)
+        let last = await store.lastCommitMessage()
+        XCTAssertEqual(last?.title, "agent")
+    }
+
     // MARK: - lastCommitMessage
 
     @MainActor

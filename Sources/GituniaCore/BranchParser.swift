@@ -8,6 +8,9 @@ public enum BranchParser {
             let ref = String(parts[0])
             let isCurrent = parts.count > 1 && parts[1].trimmingCharacters(in: .whitespaces) == "*"
             if ref.hasPrefix("refs/heads/") {
+                // `git update-ref refs/heads/--output=…` gets past `git branch`'s name check; passed
+                // on as a bare revision (log, checkout, merge) it would parse as an option.
+                guard !ref.dropFirst("refs/heads/".count).hasPrefix("-") else { return nil }
                 return BranchInfo(name: String(ref.dropFirst("refs/heads/".count)), isCurrent: isCurrent, isRemote: false)
             }
             if ref.hasPrefix("refs/remotes/") {

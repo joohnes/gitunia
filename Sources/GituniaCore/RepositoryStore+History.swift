@@ -9,6 +9,8 @@ extension RepositoryStore {
     /// before `--date=short`, since `HistoryFilter`'s own `-- <path>` must stay the trailing
     /// argument — matches how git requires pathspecs to come last.
     public func history(limit: Int = 200, skip: Int = 0, branch: String? = nil, filterArgs: [String] = []) async -> [CommitInfo] {
+        // A revision starting with `-` would parse as an option (`--output=<file>` writes a file).
+        guard branch?.hasPrefix("-") != true else { return [] }
         var args = ["log", branch ?? "HEAD", "-n", "\(limit)"]
         if skip > 0 { args += ["--skip", "\(skip)"] }
         args += ["--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1f%P%x1f%ae%x1e", "--date=short"]

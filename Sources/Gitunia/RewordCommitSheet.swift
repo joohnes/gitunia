@@ -11,6 +11,8 @@ struct RewordCommitSheet: View {
     @State private var title = ""
     @State private var body_ = ""
     @State private var loaded = false
+    /// The commit the prefilled message came from — `rewordHead` refuses if HEAD moved off it.
+    @State private var seenHead: String?
     /// HEAD's body before prefill stripped agent trailers — backs the "Undo" note, as in `CommitBox`.
     @State private var unstrippedBody: String?
     @State private var keepTrailers = false
@@ -55,7 +57,8 @@ struct RewordCommitSheet: View {
         .padding(20)
         .frame(width: 520)
         .task {
-            guard let last = await repo.lastCommitMessage() else { return }
+            guard let (hash, last) = await repo.lastCommit() else { return }
+            seenHead = hash
             let seeded = stripTrailers ? TrailerStripper.strip(last) : last
             title = seeded.title
             body_ = seeded.body
@@ -68,7 +71,8 @@ struct RewordCommitSheet: View {
         isRewording = true
         Task {
             defer { isRewording = false }
-            guard await repo.rewordHead(CommitMessage(title: title, body: body_), stripTrailers: stripTrailers && !keepTrailers) else {
+            guard await repo.rewordHead(CommitMessage(title: title, body: body_), stripTrailers: stripTrailers && !keepTrailers,
+                                         expectedHead: seenHead) else {
                 error = repo.lastError?.stderr.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Reword failed"
                 return
             }

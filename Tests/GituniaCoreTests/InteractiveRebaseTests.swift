@@ -76,6 +76,16 @@ final class InteractiveRebaseTests: XCTestCase {
         await store.history().map(\.subject)
     }
 
+    /// `merge-base --is-ancestor` failing outright (exit 128) is "unknown", not "not pushed".
+    @MainActor func testRefusesWhenPushedCheckCannotRun() async throws {
+        let (store, commits) = try await makeRepo()
+        store.hasUpstream = true // stale: no @{upstream} actually resolves
+        let error = await store.interactiveRebase(lines(commits))
+        XCTAssertNotNil(error)
+        let after = await subjects(store)
+        XCTAssertEqual(after, ["c4", "c3", "c2", "c1", "init"])
+    }
+
     @MainActor func testDrop() async throws {
         let (store, commits) = try await makeRepo()
         var todo = lines(commits)

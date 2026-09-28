@@ -212,4 +212,26 @@ final class BranchOpsTests: XCTestCase {
         let repo = Repository(id: URL(fileURLWithPath: "/tmp/repo"), branch: "master")
         XCTAssertEqual(Preflight.check(.mergeBranch(branch: "feature"), repo: repo, hasUpstream: true), [])
     }
+
+    /// A repo-local `core.sshCommand` (an agent can write `.git/config`) runs on a manual fetch —
+    /// the user clicked — but never on a background auto-fetch tick.
+    @MainActor
+    func testAutoFetchSkipsRepoLocalTransportCommand() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let marker = url.appendingPathComponent("ran")
+        let script = url.appendingPathComponent("evil.sh")
+        try "#!/bin/sh\ntouch '\(marker.path)'\nexit 1\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let git = GitRunner()
+        _ = try await git.run(["remote", "add", "origin", "ssh://example.invalid/x.git"], in: url)
+        _ = try await git.run(["config", "core.sshCommand", script.path], in: url)
+        let store = RepositoryStore(url: url)
+
+        let auto = await store.autoFetch()
+        XCTAssertFalse(auto.succeeded)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        _ = await store.fetch()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "setup check: a manual fetch does run it")
+    }
 }

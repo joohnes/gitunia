@@ -53,8 +53,8 @@ extension WorkspaceStore {
                                              continuation: AsyncStream<String>.Continuation) async throws -> ProcessResult {
         defer { continuation.finish() }
         return try await StreamingProcess.run(
-            executable: "/usr/bin/env",
-            arguments: ["git", "clone", "--progress"] + options.arguments + ["--", source, dest.path],
+            executable: GitRunner.executable,
+            arguments: ["clone", "--progress"] + options.arguments + ["--", source, dest.path],
             currentDirectory: dest.deletingLastPathComponent(),
             environment: ["GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"],
             onStderr: { continuation.yield($0) }

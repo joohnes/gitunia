@@ -32,8 +32,12 @@ extension RepositoryStore {
         guard let oldest = tip.last, Set(tip) == Set(lines.map(\.hash)) else {
             return refuse("HEAD moved since the list was shown — reopen it and try again")
         }
-        if hasUpstream, (try? await git.run(["merge-base", "--is-ancestor", oldest, "@{upstream}"], in: url)) != nil {
-            return refuse("Some of these commits are already pushed — rewriting them would need a force push")
+        if hasUpstream {
+            switch await isAncestor(oldest, of: "@{upstream}") {
+            case false?: break
+            case true?: return refuse("Some of these commits are already pushed — rewriting them would need a force push")
+            case nil: return refuse("Couldn't check whether these commits are already pushed — fetch and try again")
+            }
         }
         let parent = (try? await git.run(["rev-parse", "--verify", "-q", "\(oldest)^"], in: url))?
             .trimmingCharacters(in: .whitespacesAndNewlines)

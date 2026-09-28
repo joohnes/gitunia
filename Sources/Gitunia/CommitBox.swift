@@ -21,6 +21,8 @@ struct CommitBox: View {
     /// a draft for the *next* commit — they're a reword of the *last* one.
     @State private var draftBeforeAmend: CommitMessage?
     @State private var amendFetchTask: Task<Void, Never>?
+    /// The commit being amended as the user saw it; `commit(amend:)` refuses if HEAD moved off it.
+    @State private var amendHead: String?
     @State private var pendingAmendWarning: PreflightIssue?
     /// Set when a scan of the staged diff turned up something secret-shaped and we're waiting on
     /// the user to confirm sending it to a cloud provider anyway.
@@ -236,8 +238,10 @@ struct CommitBox: View {
             }
             draftBeforeAmend = CommitMessage(title: title, body: body_)
             isAmending = true
+            amendHead = repo.repo.headOID
             amendFetchTask = Task {
-                guard let last = await repo.lastCommitMessage(), !Task.isCancelled else { return }
+                guard let (hash, last) = await repo.lastCommit(), !Task.isCancelled else { return }
+                amendHead = hash
                 let seeded = stripIfEnabled(last)
                 title = seeded.title
                 body_ = seeded.body
@@ -364,17 +368,20 @@ struct CommitBox: View {
                 }
                 guard !repo.stagedChanges.isEmpty else { isCommitting = false; return }
             }
-            await repo.refreshIdentity()
+            // Independent git calls — run together, not one after another.
+            async let identityRefreshed: Void = repo.refreshIdentity()
+            async let stagedDiff = repo.stagedDiff()
+            async let headPatch = isAmending ? repo.headPatch() : ""
+            async let lfsCheck = repo.checkLFSInstalled()
+            await identityRefreshed
             let identityIssues = Preflight.identityWarnings(repo.identity).filter { $0.id != "signing" }
-            var secrets = repo.withoutIgnoredSecrets(SecretScanner.findings(inDiff: await repo.stagedDiffForAI().diff))
-            if isAmending {
-                // Nothing staged (e.g. amending only the message) skips the diff scan above —
-                // scan HEAD's own patch too so a secret already in the commit still gets caught.
-                for finding in repo.withoutIgnoredSecrets(SecretScanner.findings(inLog: await repo.headPatch())) where !secrets.contains(finding) {
-                    secrets.append(finding)
-                }
+            var secrets = repo.withoutIgnoredSecrets(SecretScanner.findings(inDiff: await stagedDiff))
+            // Nothing staged (e.g. amending only the message) skips the diff scan above — HEAD's
+            // own patch is scanned too so a secret already in the commit still gets caught.
+            for finding in repo.withoutIgnoredSecrets(SecretScanner.findings(inLog: await headPatch)) where !secrets.contains(finding) {
+                secrets.append(finding)
             }
-            let lfsInstalled = await repo.checkLFSInstalled()
+            let lfsInstalled = await lfsCheck
             let large = Preflight.largeFileWarnings(in: repo.repo.changes, rules: repo.attributeRules, lfsInstalled: lfsInstalled)
             let findings = identityIssues.map(\.message)
                 + secrets.map { "\($0.path): \($0.label)" }
@@ -399,7 +406,8 @@ struct CommitBox: View {
         Task {
             defer { isCommitting = false }
             let message = CommitMessage(title: title.trimmingCharacters(in: .whitespaces), body: body_)
-            let ok = await repo.commit(keepTrailers ? message : stripIfEnabled(message), amend: amend)
+            let ok = await repo.commit(keepTrailers ? message : stripIfEnabled(message), amend: amend,
+                                       expectedHead: amend ? amendHead : nil)
             if ok {
                 isAmending = false
                 draftBeforeAmend = nil

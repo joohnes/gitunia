@@ -132,7 +132,7 @@ struct SettingsView: View {
         .frame(width: 460)
         .padding()
         .onAppear { settings = app.settings }
-        .onChange(of: settings) { app.updateSettings(settings) }
+        .onChange(of: settings) { if settings != app.settings { app.updateSettings(settings) } }
     }
 
     /// Result of the last check, shown inline — the check's toasts only appear in workspace windows.

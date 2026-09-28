@@ -9,6 +9,22 @@ extension RepositoryStore {
         return await performRemote(.fetch, ["fetch", "--prune"] + (remote.map { ["--", $0] } ?? []))
     }
 
+    /// The background auto-fetch tick: skips a repo whose own `.git/config` names a command git
+    /// would run to fetch (ssh command, credential helper, proxy, upload-pack) — anything that can
+    /// write the repo, an agent included, can put one there, and a timer must not run it. A manual
+    /// fetch still does: that's the user's click.
+    func autoFetch() async -> RemoteResult {
+        let keys = #"^(core\.(sshcommand|gitproxy)|credential\..*helper|remote\..*\.uploadpack|protocol\..*allow)$"#
+        let local = (try? await git.run(["config", "--local", "--name-only", "--get-regexp", keys], in: url,
+                                        allowedExitCodes: [0, 1])) ?? ""
+        let found = local.split(separator: "\n").map(String.init)
+        guard found.isEmpty else {
+            return RemoteResult(kind: .fetch, succeeded: false,
+                                summary: "Auto-fetch skipped: this repository's own config sets \(found.joined(separator: ", ")) — fetch manually")
+        }
+        return await fetch()
+    }
+
     @discardableResult
     public func pull() async -> RemoteResult {
         await performRemote(.pull, ["pull", "--ff-only"])

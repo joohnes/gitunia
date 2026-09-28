@@ -200,4 +200,15 @@ final class GitignoreRepositoryStoreTests: XCTestCase {
         // second, redundant refresh here.
         XCTAssertFalse(store.untrackedChanges.map(\.path).contains("junk.txt"))
     }
+
+    @MainActor
+    func testCleanRemovesFileWhoseNameGitQuotes() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        try TestHelpers.write("x", to: url, "weird\"name.txt")
+        let store = RepositoryStore(url: url)
+        let preview = await store.cleanPreview(includeDirectories: false)
+        XCTAssertEqual(preview, ["weird\"name.txt"])
+        _ = await store.clean(paths: preview, includeDirectories: false)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.appendingPathComponent("weird\"name.txt").path))
+    }
 }
