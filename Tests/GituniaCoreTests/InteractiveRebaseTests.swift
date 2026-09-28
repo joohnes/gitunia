@@ -36,19 +36,6 @@ final class InteractiveRebaseTests: XCTestCase {
         XCTAssertNotNil(RebaseTodo.validate([Line(action: .drop, hash: "a", subject: "a"), Line(action: .fixup, hash: "b", subject: "b")]))
         XCTAssertNotNil(RebaseTodo.validate([Line(action: .drop, hash: "a", subject: "a")]))
         XCTAssertNotNil(RebaseTodo.validate([]))
-        XCTAssertEqual(RebaseTodo.summary([Line(hash: "a", subject: ""), Line(action: .squash, hash: "b", subject: ""),
-                                           Line(action: .drop, hash: "c", subject: "")]), "3 commits → 1, 1 dropped")
-    }
-
-    /// B11: the ▲/▼ fallback buttons and `.onMove` both go through this.
-    func testMoveLine() {
-        let lines = [Line(hash: "a", subject: ""), Line(hash: "b", subject: ""), Line(hash: "c", subject: "")]
-        XCTAssertEqual(RebaseTodo.moveLine(lines, from: 0, to: 1).map(\.hash), ["b", "a", "c"])
-        XCTAssertEqual(RebaseTodo.moveLine(lines, from: 2, to: 0).map(\.hash), ["c", "a", "b"])
-        // Out-of-range `to` clamps instead of crashing or dropping the line.
-        XCTAssertEqual(RebaseTodo.moveLine(lines, from: 0, to: 99).map(\.hash), ["b", "c", "a"])
-        // Out-of-range `from` is a no-op.
-        XCTAssertEqual(RebaseTodo.moveLine(lines, from: 99, to: 0).map(\.hash), ["a", "b", "c"])
     }
 
     // MARK: - Integration

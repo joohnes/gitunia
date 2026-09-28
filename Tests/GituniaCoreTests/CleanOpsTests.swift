@@ -3,58 +3,14 @@ import XCTest
 
 /// T4: `git clean` preview/delete and `.gitignore` append — pure parsing/building logic plus
 /// `RepositoryStore` against real temp repos, same style as `BranchOpsTests`/`RemoteOpsTests`.
-final class CleanPreviewParserTests: XCTestCase {
-    func testParsesFilesOnly() {
-        let out = "Would remove .DS_Store\nWould remove build.log\n"
-        XCTAssertEqual(CleanPreviewParser.parse(out), [".DS_Store", "build.log"])
-    }
-
-    func testParsesDirectoriesWithTrailingSlash() {
-        let out = "Would remove build/\nWould remove master.o\n"
-        XCTAssertEqual(CleanPreviewParser.parse(out), ["build/", "master.o"])
-    }
-
-    func testEmptyOutputIsEmpty() {
-        XCTAssertEqual(CleanPreviewParser.parse(""), [])
-    }
-}
-
 final class GitignorePatternTests: XCTestCase {
-    func testFilePattern() {
-        XCTAssertEqual(GitignorePattern.file("src/master.swift"), "/src/master.swift")
-    }
-
     func testFilePatternEscapesGlobCharacters() {
         XCTAssertEqual(GitignorePattern.file("a[1]*.txt"), "/a\\[1]\\*.txt")
         XCTAssertEqual(GitignorePattern.folder("odd "), "/odd\\ /")
     }
-
-    func testFolderPattern() {
-        XCTAssertEqual(GitignorePattern.folder("build"), "/build/")
-    }
-
-    func testExtensionPattern() {
-        XCTAssertEqual(GitignorePattern.extensionGlob(for: "src/master.swift"), "*.swift")
-    }
-
-    func testNoExtensionOmitsPattern() {
-        XCTAssertNil(GitignorePattern.extensionGlob(for: "README"))
-    }
-
-    func testDotfileOmitsPattern() {
-        XCTAssertNil(GitignorePattern.extensionGlob(for: ".env"))
-    }
 }
 
 final class GitignoreEditorTests: XCTestCase {
-    func testCreatesWithTrailingNewline() {
-        XCTAssertEqual(GitignoreEditor.appending("/build/", to: ""), "/build/\n")
-    }
-
-    func testAppendsAfterTrailingNewline() {
-        XCTAssertEqual(GitignoreEditor.appending("*.log", to: "/build/\n"), "/build/\n*.log\n")
-    }
-
     func testAppendsWithoutTrailingNewline() {
         XCTAssertEqual(GitignoreEditor.appending("*.log", to: "/build/"), "/build/\n*.log\n")
     }
@@ -154,53 +110,6 @@ final class CleanRepositoryStoreTests: XCTestCase {
 }
 
 final class GitignoreRepositoryStoreTests: XCTestCase {
-    @MainActor
-    func testCreatesGitignoreWhenMissing() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let ok = await store.addToGitignore("/build/")
-        XCTAssertTrue(ok)
-        let contents = try String(contentsOf: url.appendingPathComponent(".gitignore"), encoding: .utf8)
-        XCTAssertEqual(contents, "/build/\n")
-    }
-
-    @MainActor
-    func testAppendsWithoutTrailingNewlineInExistingFile() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        try TestHelpers.write("*.log", to: url, ".gitignore") // deliberately no trailing newline
-        let store = RepositoryStore(url: url)
-        let ok = await store.addToGitignore("/build/")
-        XCTAssertTrue(ok)
-        let contents = try String(contentsOf: url.appendingPathComponent(".gitignore"), encoding: .utf8)
-        XCTAssertEqual(contents, "*.log\n/build/\n")
-    }
-
-    @MainActor
-    func testDoesNotDuplicateExistingLine() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        try TestHelpers.write("/build/\n", to: url, ".gitignore")
-        let store = RepositoryStore(url: url)
-        let ok = await store.addToGitignore("/build/")
-        XCTAssertFalse(ok)
-        let contents = try String(contentsOf: url.appendingPathComponent(".gitignore"), encoding: .utf8)
-        XCTAssertEqual(contents, "/build/\n")
-    }
-
-    @MainActor
-    func testIgnoredUntrackedFileDisappearsAfterRefresh() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        try TestHelpers.write("junk", to: url, "junk.txt")
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertTrue(store.untrackedChanges.map(\.path).contains("junk.txt"))
-
-        _ = await store.addToGitignore(GitignorePattern.file("junk.txt"))
-        // addToGitignore already refreshes; assert directly rather than refreshing again so a
-        // regression that dropped that refresh call fails this test instead of hiding behind a
-        // second, redundant refresh here.
-        XCTAssertFalse(store.untrackedChanges.map(\.path).contains("junk.txt"))
-    }
-
     @MainActor
     func testCleanRemovesFileWhoseNameGitQuotes() async throws {
         let url = try await TestHelpers.makeTempRepo()

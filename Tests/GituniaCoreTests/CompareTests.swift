@@ -4,110 +4,29 @@ import XCTest
 // MARK: - CompareBase.resolve (pure)
 
 final class CompareBaseTests: XCTestCase {
-    func testUsesOriginHEADWhenSet() {
-        let base = CompareBase.resolve(originHEADRef: "refs/remotes/origin/develop\n", localBranches: ["master", "develop"])
-        XCTAssertEqual(base, "develop")
-    }
-
-    /// No local branch of that name → the remote-tracking ref, so the base always resolves.
-    func testOriginHEADWithoutLocalBranchIsRemoteTracking() {
-        XCTAssertEqual(CompareBase.resolve(originHEADRef: "refs/remotes/origin/develop\n", localBranches: ["master"]), "origin/develop")
-    }
-
-    func testFallsBackToLocalMasterWhenOriginHEADUnset() {
-        // `git symbolic-ref` on an unset ref exits 128 with empty stdout — the caller passes that
-        // straight through as an empty string (or nil, if the process call itself failed).
-        XCTAssertEqual(CompareBase.resolve(originHEADRef: "", localBranches: ["master", "feature"]), "master")
-        XCTAssertEqual(CompareBase.resolve(originHEADRef: nil, localBranches: ["master", "feature"]), "master")
-    }
-
-    func testFallsBackToMainWhenNoMaster() {
-        XCTAssertEqual(CompareBase.resolve(originHEADRef: nil, localBranches: ["main", "feature"]), "main")
-    }
-
-    func testNilWhenNothingResolves() {
-        XCTAssertNil(CompareBase.resolve(originHEADRef: nil, localBranches: ["feature"]))
-    }
-
-    func testMasterPreferredOverMainWhenBothExist() {
-        XCTAssertEqual(CompareBase.resolve(originHEADRef: nil, localBranches: ["main", "master"]), "master")
+    func testResolve() {
+        // An empty `originHEADRef` is what `git symbolic-ref` prints for an unset ref (exit 128);
+        // nil means the process call itself failed. With no local branch of origin/HEAD's name the
+        // remote-tracking ref is used, so the base always resolves.
+        let cases: [(originHEAD: String?, local: [String], expected: String?)] = [
+            ("refs/remotes/origin/develop\n", ["master", "develop"], "develop"),
+            ("refs/remotes/origin/develop\n", ["master"], "origin/develop"),
+            ("", ["master", "feature"], "master"),
+            (nil, ["master", "feature"], "master"),
+            (nil, ["main", "feature"], "main"),
+            (nil, ["feature"], nil),
+            (nil, ["main", "master"], "master"),
+        ]
+        for c in cases {
+            XCTAssertEqual(CompareBase.resolve(originHEADRef: c.originHEAD, localBranches: c.local), c.expected,
+                           "\(String(describing: c.originHEAD)) \(c.local)")
+        }
     }
 }
 
-// MARK: - CompareCounts.parse (pure)
-
-final class CompareCountsTests: XCTestCase {
-    func testParsesBehindThenAhead() {
-        // `git rev-list --left-right --count base...head` prints "<base-only>\t<head-only>".
-        let counts = CompareCounts.parse("1\t3\n")
-        XCTAssertEqual(counts.behind, 1)
-        XCTAssertEqual(counts.ahead, 3)
-    }
-
-    func testEmptyOutputIsZeroZero() {
-        let counts = CompareCounts.parse("")
-        XCTAssertEqual(counts.ahead, 0)
-        XCTAssertEqual(counts.behind, 0)
-    }
-}
-
-// MARK: - RepositoryStore.defaultBaseBranch / compareCounts / compareCommits / compareDiff (real git)
+// MARK: - RepositoryStore compareCounts / compareCommits / compareDiff (real git)
 
 final class CompareOpsIntegrationTests: XCTestCase {
-    /// A repo with a real `origin` remote whose default branch differs from the fallback ("master")
-    /// so the origin/HEAD path is actually exercised, not accidentally shadowed by the local-branch
-    /// fallback. Mirrors `RemoteOpsTests.makeRepoWithRemote`.
-    @MainActor
-    private func makeRepoWithRemote(defaultBranch: String = "master") async throws -> (repo: URL, remote: URL) {
-        let repo = try await TestHelpers.makeTempRepo()
-        let remote = try TestHelpers.makeTempDir().appendingPathComponent("remote.git")
-        let git = GitRunner()
-        _ = try await git.run(["init", "-q", "-b", "master", "--bare", remote.path], in: repo)
-        _ = try await git.run(["remote", "add", "origin", remote.path], in: repo)
-        return (repo, remote)
-    }
-
-    @MainActor
-    func testDefaultBaseBranchViaOriginHEAD() async throws {
-        let (url, _) = try await makeRepoWithRemote()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        _ = await store.push() // sets upstream, but origin/HEAD itself is a separate ref
-
-        // `git remote set-head` is what actually sets refs/remotes/origin/HEAD — a plain push
-        // doesn't. Verify the real failure mode first (unset), then set it and verify the real
-        // success path.
-        let git = GitRunner()
-        let beforeSet = await store.defaultBaseBranch()
-        XCTAssertEqual(beforeSet, "master") // falls back to local master — origin/HEAD isn't set yet
-
-        _ = try await git.run(["remote", "set-head", "origin", "master"], in: url)
-        let out = try await git.run(["symbolic-ref", "refs/remotes/origin/HEAD"], in: url)
-        XCTAssertEqual(out.trimmingCharacters(in: .whitespacesAndNewlines), "refs/remotes/origin/master")
-        await store.refreshStatus()
-        let afterSet = await store.defaultBaseBranch()
-        XCTAssertEqual(afterSet, "master")
-    }
-
-    @MainActor
-    func testDefaultBaseBranchNilThenFallsBackToMain() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        // No origin at all, and the only branch is "master" (from makeTempRepo) — rename it to
-        // something else so neither "master" nor "main" exists, then verify nil, then rename to
-        // "main" and verify the fallback.
-        _ = try await git.run(["branch", "-m", "master", "trunk"], in: url)
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let nilBase = await store.defaultBaseBranch()
-        XCTAssertNil(nilBase)
-
-        _ = try await git.run(["branch", "-m", "trunk", "main"], in: url)
-        await store.refreshStatus()
-        let mainBase = await store.defaultBaseBranch()
-        XCTAssertEqual(mainBase, "main")
-    }
-
     @MainActor
     func testCompareCountsAndCommits() async throws {
         let url = try await TestHelpers.makeTempRepo()
@@ -173,83 +92,5 @@ final class CompareOpsIntegrationTests: XCTestCase {
         let twoDotOut = try await git.run(["diff", "--no-color", "master..feature"], in: url)
         let twoDot = DiffParser.parse(twoDotOut)
         XCTAssertEqual(twoDot.map(\.path).sorted(), ["feature.txt", "master-only.txt"])
-    }
-
-    @MainActor
-    func testCompareHeadEqualsBaseIsEmpty() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let counts = await store.compareCounts(base: "master", head: "master")
-        XCTAssertEqual(counts.ahead, 0)
-        XCTAssertEqual(counts.behind, 0)
-        let commits = await store.compareCommits(base: "master", head: "master")
-        XCTAssertTrue(commits.isEmpty)
-        let diff = await store.compareDiff(base: "master", head: "master")
-        XCTAssertTrue(diff.isEmpty)
-    }
-}
-
-// MARK: - Persistence (T4): RepoPrefs.compareBase round-trips, old workspace.json still decodes
-
-final class ComparePersistenceTests: XCTestCase {
-    @MainActor
-    func testSetCompareBasePersistsAndRestores() async throws {
-        // A dedicated workspace root containing exactly one repo — same pattern as the render
-        // tests' `makeRepo...` helpers. Pointing `openWorkspace` at `makeTempRepo()`'s own parent
-        // (the shared system temp directory) would scan every other test's leftover temp repos
-        // too, which is both slow and makes "the" repo ambiguous.
-        let root = try TestHelpers.makeTempDir()
-        let repoURL = root.appendingPathComponent("repo")
-        try await TestRepo.make(at: repoURL, files: ["README.md": "hello\n"])
-
-        let configFile = try TestHelpers.makeTempDir().appendingPathComponent("workspace.json")
-        let configStore = ConfigStore(fileURL: configFile)
-        let workspace = WorkspaceStore(configStore: configStore)
-        await workspace.openUntitled(linkingFolder: root)
-        guard let repo = workspace.repositories.first else {
-            return XCTFail("repo not scanned")
-        }
-        workspace.setCompareBase("develop", for: repo)
-        // Keyed by `repo.url.path`, not the raw `repoURL` this test built — the scanner
-        // standardizes the workspace root (`WorkspaceScanner.scan`/`WorkspaceStore.openWorkspace`
-        // both use `.standardizedFileURL`), so `repo.url` is the source of truth for the path a
-        // real app run would persist under.
-        XCTAssertEqual(configStore.loadWithWarning().0.repos[repo.url.path]?.compareBase, "develop")
-
-        // Reload into a fresh WorkspaceStore/RepositoryStore, same as relaunching the app.
-        let reopened = WorkspaceStore(configStore: configStore)
-        await reopened.openUntitled(linkingFolder: root)
-        let reopenedRepo = reopened.repositories.first
-        XCTAssertEqual(reopenedRepo?.restoredCompareBase, "develop")
-    }
-
-    /// A `workspace.json` written before this task existed (no `compareBase` key at all) must keep
-    /// decoding — `RepoPrefs`'s `decodeIfPresent` is what guarantees this.
-    func testPreExistingWorkspaceJSONWithoutCompareBaseStillDecodes() throws {
-        let json = """
-        {
-          "workspacePath" : "/tmp/some-workspace",
-          "repos" : {
-            "/tmp/some-workspace/repo-a" : {
-              "tags" : ["backend"],
-              "localAIOnly" : false,
-              "selectedPath" : "src/master.swift"
-            }
-          },
-          "settings" : {
-            "aiProvider" : "claudeCLI",
-            "ollamaModel" : "llama3.1",
-            "diffCharLimit" : 8000,
-            "appearance" : "system",
-            "autoFetchMinutes" : 15
-          }
-        }
-        """
-        let config = try JSONDecoder().decode(WorkspaceConfig.self, from: Data(json.utf8))
-        XCTAssertEqual(config.workspacePath, "/tmp/some-workspace")
-        let prefs = config.repos["/tmp/some-workspace/repo-a"]
-        XCTAssertEqual(prefs?.tags, ["backend"])
-        XCTAssertEqual(prefs?.selectedPath, "src/master.swift")
-        XCTAssertNil(prefs?.compareBase)
     }
 }

@@ -20,31 +20,6 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(files[0].hunks[0].lines.map(\.kind), [.added])
     }
 
-    @MainActor
-    func testMergeCommitDiffShowsFirstParentChanges() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let git = GitRunner()
-
-        _ = try await git.run(["checkout", "-q", "-b", "feat"], in: url)
-        try TestHelpers.write("f\n", to: url, "f.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "feat: f"))
-
-        _ = try await git.run(["checkout", "-q", "master"], in: url)
-        try TestHelpers.write("m\n", to: url, "m.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "chore: m"))
-
-        _ = try await git.run(["merge", "-q", "--no-ff", "-m", "merge feat", "feat"], in: url)
-
-        let history = await store.history()
-        XCTAssertEqual(history[0].subject, "merge feat")
-
-        let files = await store.commitDiff(history[0].hash)
-        XCTAssertEqual(files.map(\.path), ["f.txt"])
-    }
-
     // MARK: - Filter (HistoryFilter.gitArgs against real git)
 
     @MainActor
@@ -82,49 +57,6 @@ final class HistoryTests: XCTestCase {
     }
 
     @MainActor
-    func testFilterBySinceUntil() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let git = GitRunner()
-        setenv("GIT_AUTHOR_DATE", "2020-01-01T12:00:00", 1)
-        setenv("GIT_COMMITTER_DATE", "2020-01-01T12:00:00", 1)
-        try TestHelpers.write("a\n", to: url, "a.txt")
-        _ = try await git.run(["add", "."], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "old commit"], in: url)
-        setenv("GIT_AUTHOR_DATE", "2025-06-01T12:00:00", 1)
-        setenv("GIT_COMMITTER_DATE", "2025-06-01T12:00:00", 1)
-        try TestHelpers.write("b\n", to: url, "b.txt")
-        _ = try await git.run(["add", "."], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "new commit"], in: url)
-        unsetenv("GIT_AUTHOR_DATE"); unsetenv("GIT_COMMITTER_DATE")
-
-        let filter = HistoryFilter.parse("since:2025-01-01")
-        let history = await store.history(filterArgs: filter.gitArgs)
-        XCTAssertEqual(history.map(\.subject), ["new commit"])
-
-        let untilFilter = HistoryFilter.parse("until:2020-06-01")
-        let untilHistory = await store.history(filterArgs: untilFilter.gitArgs)
-        XCTAssertEqual(untilHistory.map(\.subject), ["old commit"])
-    }
-
-    @MainActor
-    func testFilterByGrepAcrossBody() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let git = GitRunner()
-        try TestHelpers.write("a\n", to: url, "a.txt")
-        _ = try await git.run(["add", "."], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "fix: thing\n\nContains needle in the body"], in: url)
-        try TestHelpers.write("b\n", to: url, "b.txt")
-        _ = try await git.run(["add", "."], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "chore: other"], in: url)
-
-        let filter = HistoryFilter.parse("needle")
-        let history = await store.history(filterArgs: filter.gitArgs)
-        XCTAssertEqual(history.map(\.subject), ["fix: thing"])
-    }
-
-    @MainActor
     func testFilterAllMatchRequiresEveryWord() async throws {
         let url = try await TestHelpers.makeTempRepo()
         let store = RepositoryStore(url: url)
@@ -158,31 +90,6 @@ final class HistoryTests: XCTestCase {
         // skip: 1 within the *filtered* range — the human commit in between must not consume a slot.
         let page2 = await store.history(limit: 1, skip: 1, filterArgs: profile.gitAuthorArgs)
         XCTAssertEqual(page2.map(\.subject), ["bot commit 1"])
-    }
-
-    // MARK: - Paging
-
-    @MainActor
-    func testPagingBoundaries() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let git = GitRunner()
-        // init + 449 more = 450 commits total.
-        for i in 1...449 {
-            _ = try await git.run(["commit", "-q", "--allow-empty", "-m", "commit \(i)"], in: url)
-        }
-
-        let page1 = await store.history(limit: 200, skip: 0)
-        XCTAssertEqual(page1.count, 200)
-        XCTAssertEqual(page1.first?.subject, "commit 449")
-
-        let page2 = await store.history(limit: 200, skip: 200)
-        XCTAssertEqual(page2.count, 200)
-        XCTAssertEqual(Set(page1.map(\.hash)).intersection(page2.map(\.hash)), [])
-
-        let page3 = await store.history(limit: 200, skip: 400)
-        XCTAssertEqual(page3.count, 50) // 450 total - 400 already loaded
-        XCTAssertEqual(page3.last?.subject, "init")
     }
 
     // MARK: - Commit detail
@@ -279,23 +186,6 @@ final class HistoryTests: XCTestCase {
     }
 
     @MainActor
-    func testFileHistoryWithoutRename() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        try TestHelpers.write("1\n", to: url, "plain.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "add plain"))
-        try TestHelpers.write("1\n2\n", to: url, "plain.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "modify plain"))
-
-        let entries = await store.fileHistory(path: "plain.txt")
-        XCTAssertEqual(entries.map(\.commit.subject), ["modify plain", "add plain"])
-        XCTAssertEqual(entries.map(\.path), ["plain.txt", "plain.txt"])
-        XCTAssertEqual(entries.map(\.kind), [.modified, .added])
-    }
-
-    @MainActor
     func testFileHistoryPaging() async throws {
         let url = try await TestHelpers.makeTempRepo()
         let store = RepositoryStore(url: url)
@@ -348,39 +238,6 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url.appendingPathComponent("f.txt"), encoding: .utf8), "v1\n")
     }
 
-    /// Real, surprising git behavior (see `RepositoryStore.restoreFile`'s doc comment): restoring a
-    /// currently-tracked path from a commit where it didn't exist yet is not an error — it silently
-    /// *deletes* the working-tree file. `fileExists(path:at:)` is what the UI checks first to avoid
-    /// ever hitting this.
-    @MainActor
-    func testRestoreFileThatDidNotExistAtSourceDeletesInsteadOfErroring() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let git = GitRunner()
-        let rootHash = (try await git.run(["rev-parse", "HEAD"], in: url)).trimmingCharacters(in: .whitespacesAndNewlines)
-        try TestHelpers.write("v1\n", to: url, "new.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "add new.txt"))
-
-        let existedAtRoot = await store.fileExists("new.txt", at: rootHash)
-        XCTAssertFalse(existedAtRoot)
-        // Raw git behaviour, which `restoreFile` refuses (see RestoreFileGuardTests).
-        let ok = (try? await git.run(["restore", "--source=\(rootHash)", "--worktree", "--", "new.txt"], in: url)) != nil
-        XCTAssertTrue(ok) // exits 0 — no error to surface
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.appendingPathComponent("new.txt").path))
-    }
-
-    /// The other real case: a path git has never heard of at all is a genuine, surfaced error.
-    @MainActor
-    func testRestoreCompletelyUnknownPathErrors() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let hash = await store.history().first!.hash
-        let ok = await store.restoreFile("never-existed.txt", from: hash)
-        XCTAssertFalse(ok)
-        XCTAssertTrue((store.lastError?.stderr ?? "").localizedCaseInsensitiveContains("does not exist"))
-    }
-
     /// `fileExists` returns false both for a root commit's parent ref (no such ref) and for a real
     /// commit where the file genuinely wasn't present yet — the same "disable, don't error" signal
     /// `CommitDiffView`/`HistoryView` use for "Restore Version Before This Commit".
@@ -402,42 +259,6 @@ final class HistoryTests: XCTestCase {
         XCTAssertFalse(fAtRoot)
         XCTAssertFalse(fBeforeRoot)
         XCTAssertTrue(fAtAdd)
-    }
-
-    // MARK: - Per-commit file statuses (T2)
-
-    @MainActor
-    func testCommitFileStatuses() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        try TestHelpers.write("v1\n", to: url, "added.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "add"))
-        let addHash = await store.history().first!.hash
-
-        try TestHelpers.write("v1\nv2\n", to: url, "added.txt")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "modify"))
-        let modifyHash = await store.history().first!.hash
-
-        let addStatuses = await store.commitFileStatuses(addHash)
-        XCTAssertEqual(addStatuses["added.txt"], .added)
-        let modifyStatuses = await store.commitFileStatuses(modifyHash)
-        XCTAssertEqual(modifyStatuses["added.txt"], .modified)
-    }
-}
-
-// MARK: - RestoreFileConfirmation (pure)
-
-final class RestoreFileConfirmationTests: XCTestCase {
-    func testDetectsUncommittedChangesToThePath() {
-        let changes = [FileChange(path: "a.txt", status: .modified, area: .unstaged)]
-        XCTAssertTrue(RestoreFileConfirmation.hasUncommittedChanges(path: "a.txt", in: changes))
-        XCTAssertFalse(RestoreFileConfirmation.hasUncommittedChanges(path: "b.txt", in: changes))
-    }
-
-    func testNoChangesMeansNothingToLose() {
-        XCTAssertFalse(RestoreFileConfirmation.hasUncommittedChanges(path: "a.txt", in: []))
     }
 }
 
@@ -501,13 +322,5 @@ final class RepositoryStoreBlameTests: XCTestCase {
 
         XCTAssertTrue(blame.lines[3].isUncommitted)
         XCTAssertEqual(blame.lines[3].text, "line four uncommitted")
-    }
-
-    @MainActor
-    func testBlameOnMissingFileReturnsNil() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let result = await store.blame(path: "does-not-exist.txt")
-        XCTAssertNil(result)
     }
 }

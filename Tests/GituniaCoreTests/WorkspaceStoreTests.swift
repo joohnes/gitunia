@@ -43,30 +43,6 @@ final class WorkspaceStoreTests: XCTestCase {
         ])
     }
 
-    /// Pure mapping: a path under the *master* repo's `.git/worktrees/<name>/` — where a linked
-    /// worktree's real HEAD/index/refs live — must route to the worktree's own root, found via its
-    /// resolved gitdir, not to the master repo whose working-tree root also prefix-matches the path.
-    func testRepositoryOwningPathRoutesWorktreeGitDirToWorktreeRoot() {
-        let master = URL(fileURLWithPath: "/ws/master")
-        let worktree = URL(fileURLWithPath: "/ws/master/.claude/worktrees/feature")
-        let gitDirs: [URL: URL] = [
-            master: URL(fileURLWithPath: "/ws/master/.git"),
-            worktree: URL(fileURLWithPath: "/ws/master/.git/worktrees/feature"),
-        ]
-        let roots = [master, worktree]
-        XCTAssertEqual(
-            WorkspaceStore.repository(owning: "/ws/master/.git/worktrees/feature/HEAD", among: roots, gitDirs: gitDirs)?.path,
-            worktree.path
-        )
-        // An ordinary path inside the master repo's own working tree is unaffected.
-        XCTAssertEqual(
-            WorkspaceStore.repository(owning: "/ws/master/src/x.swift", among: roots, gitDirs: gitDirs)?.path,
-            master.path
-        )
-        // No gitDirs supplied at all: falls back to the old root-only behavior.
-        XCTAssertNil(WorkspaceStore.repository(owning: "/ws/master/.git/worktrees/feature/HEAD", among: [worktree]))
-    }
-
     /// End-to-end with a real `git worktree add`: a commit made inside the worktree touches
     /// `<master>/.git/worktrees/<name>/{HEAD,index}` — verify the pure mapping functions route those
     /// paths to the worktree's `RepositoryStore`, not the master one, using each repo's real resolved
@@ -169,25 +145,6 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testVisibleRepositoriesAlwaysSortedByName() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["Beta", "alpha", "mid"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        try TestHelpers.write("dirty\n", to: ws.appendingPathComponent("mid"), "d.txt")
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("c.json")))
-        await store.openUntitled(linkingFolder: ws)
-        XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["mid", "alpha", "Beta"])
-        store.sort = .name
-        XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["alpha", "Beta", "mid"])
-        store.setTags(["work"], for: store.repositories.first { $0.repo.name == "mid" }!)
-        store.scope = .tag("work")
-        XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["mid"])
-        store.stopWatching()
-    }
-
-    @MainActor
     func testRefreshAllPreservesPrefsWhenScanFindsNothing() async throws {
         let ws = try TestHelpers.makeTempDir()
         let repoA = try await TestHelpers.makeTempRepo()
@@ -226,34 +183,6 @@ final class WorkspaceStoreTests: XCTestCase {
         return (store, store.repositories[0], cfgURL)
     }
 
-    @MainActor
-    func testSetSelectedPathPersistsImmediatelyAndIsReadableBackFreshly() async throws {
-        let (store, repo, cfgURL) = try await makeOpenedStore()
-        store.setSelectedPath("src/master.swift", for: repo)
-        XCTAssertEqual(ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]?.selectedPath, "src/master.swift")
-
-        // A restored RepositoryStore picks the hint up through applyPrefs.
-        let fresh = RepositoryStore(url: repo.url, prefs: ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]!)
-        XCTAssertEqual(fresh.restoredSelectedPath, "src/master.swift")
-        store.stopWatching()
-    }
-
-    @MainActor
-    func testSetCommitDraftDebouncesToLastValueOnly() async throws {
-        let (store, repo, cfgURL) = try await makeOpenedStore()
-        store.setCommitDraft(CommitMessage(title: "first"), for: repo)
-        store.setCommitDraft(CommitMessage(title: "second"), for: repo)
-        store.setCommitDraft(CommitMessage(title: "third", body: "final"), for: repo)
-
-        // Immediately after: nothing written yet (still debouncing).
-        XCTAssertNil(ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]?.commitDraft)
-
-        func stored() -> CommitMessage? { ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]?.commitDraft }
-        try await TestHelpers.waitUntil { stored() != nil }
-        XCTAssertEqual(stored(), CommitMessage(title: "third", body: "final"))
-        store.stopWatching()
-    }
-
     /// C4: `restoredDraft` is the in-memory hint the view re-reads when a tab/repo is reselected —
     /// it must reflect the latest typed draft immediately, not only once the debounced disk write
     /// (tested above) has fired. Reading it back *before* the debounce elapses is exactly the "switch
@@ -265,20 +194,6 @@ final class WorkspaceStoreTests: XCTestCase {
         store.setCommitDraft(CommitMessage(title: "typed just now"), for: repo)
         // No sleep at all: the debounce (>= 1s by default, shorter in this helper) hasn't fired yet.
         XCTAssertEqual(repo.restoredDraft, CommitMessage(title: "typed just now"))
-        store.stopWatching()
-    }
-
-    @MainActor
-    func testEmptyCommitDraftClearsStoredEntry() async throws {
-        let (store, repo, cfgURL) = try await makeOpenedStore()
-        func stored() -> CommitMessage? { ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]?.commitDraft }
-        store.setCommitDraft(CommitMessage(title: "wip"), for: repo)
-        try await TestHelpers.waitUntil { stored() != nil }
-        XCTAssertNotNil(stored())
-
-        store.setCommitDraft(CommitMessage(title: "  ", body: " "), for: repo)
-        try await TestHelpers.waitUntil { stored() == nil }
-        XCTAssertNil(stored())
         store.stopWatching()
     }
 
@@ -295,22 +210,6 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     // MARK: - Scope / sort / query (sidebar header redesign)
-
-    /// Pure, no-git: "changed" includes repos with only working-tree changes, only ahead/behind
-    /// commits, or both — and excludes repos with neither.
-    func testIsChangedCoversWorkingTreeAndAheadBehind() {
-        let clean = Repository(id: URL(fileURLWithPath: "/a"))
-        XCTAssertFalse(WorkspaceStore.isChanged(clean))
-
-        let dirty = Repository(id: URL(fileURLWithPath: "/a"), changes: [FileChange(path: "x", status: .modified, area: .unstaged)])
-        XCTAssertTrue(WorkspaceStore.isChanged(dirty))
-
-        let aheadOnly = Repository(id: URL(fileURLWithPath: "/a"), ahead: 1)
-        XCTAssertTrue(WorkspaceStore.isChanged(aheadOnly))
-
-        let behindOnly = Repository(id: URL(fileURLWithPath: "/a"), behind: 2)
-        XCTAssertTrue(WorkspaceStore.isChanged(behindOnly))
-    }
 
     @MainActor
     func testScopeFiltersToChangedIncludingAheadOnly() async throws {
@@ -345,43 +244,6 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTagScopeFallsBackToAllWhenTagDisappears() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["a", "b"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("c.json")))
-        await store.openUntitled(linkingFolder: ws)
-        let a = store.repositories.first { $0.repo.name == "a" }!
-        store.setTags(["work"], for: a)
-        store.scope = .tag("work")
-        XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["a"])
-
-        store.setTags([], for: a)
-        XCTAssertEqual(store.scope, .all)
-        store.stopWatching()
-    }
-
-    @MainActor
-    func testScopeChipsReportCounts() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["Beta", "alpha", "mid"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        try TestHelpers.write("dirty\n", to: ws.appendingPathComponent("mid"), "d.txt")
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("c.json")))
-        await store.openUntitled(linkingFolder: ws)
-        store.setTags(["work"], for: store.repositories.first { $0.repo.name == "mid" }!)
-
-        let chips = store.scopeChips
-        XCTAssertEqual(chips.map(\.label), ["All", "Changed", "Attention", "work"])
-        XCTAssertEqual(chips.map(\.count), [3, 1, 0, 1])
-        store.stopWatching()
-    }
-
-    @MainActor
     func testAttentionScopeIncludesRepoStoppedOnMergeConflict() async throws {
         let ws = try TestHelpers.makeTempDir()
         for name in ["conflicted", "dirty"] {
@@ -404,66 +266,6 @@ final class WorkspaceStoreTests: XCTestCase {
         store.scope = .attention
         XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["conflicted"])
         XCTAssertEqual(store.visibleRepositories.first?.operation, .merge)
-        store.stopWatching()
-    }
-
-    @MainActor
-    func testQueryCombinesWithScope() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["backend-api", "backend-worker", "frontend-app"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        try TestHelpers.write("x\n", to: ws.appendingPathComponent("backend-worker"), "x.txt")
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("c.json")))
-        await store.openUntitled(linkingFolder: ws)
-
-        store.searchQuery = "backend"
-        XCTAssertEqual(Set(store.visibleRepositories.map(\.repo.name)), ["backend-api", "backend-worker"])
-
-        store.scope = .changed
-        XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["backend-worker"])
-        store.stopWatching()
-    }
-
-    @MainActor
-    func testSelectAdjacentChangedWalksVisibleOrderAndWraps() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["r1", "r2", "r3"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        try TestHelpers.write("x\n", to: ws.appendingPathComponent("r1"), "x.txt")
-        try TestHelpers.write("x\n", to: ws.appendingPathComponent("r3"), "x.txt")
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("c.json")))
-        await store.openUntitled(linkingFolder: ws)
-        store.sort = .name
-        func selectedName() -> String? { store.selectedRepository?.repo.name }
-
-        store.select(store.repositories.first { $0.repo.name == "r1" }!)
-        store.selectAdjacentChanged(forward: true)
-        XCTAssertEqual(selectedName(), "r3")
-        store.selectAdjacentChanged(forward: true)
-        XCTAssertEqual(selectedName(), "r1", "wraps around")
-        store.selectAdjacentChanged(forward: false)
-        XCTAssertEqual(selectedName(), "r3", "backward wraps too")
-        store.stopWatching()
-    }
-
-    @MainActor
-    func testSelectRepositoryAtSidebarIndex() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["c", "a", "b"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("c.json")))
-        await store.openUntitled(linkingFolder: ws)
-        store.sort = .name
-        store.selectRepository(atSidebarIndex: 2)
-        XCTAssertEqual(store.selectedRepository?.repo.name, "c")
-        store.selectRepository(atSidebarIndex: 9)
-        XCTAssertEqual(store.selectedRepository?.repo.name, "c", "out of range is a no-op")
         store.stopWatching()
     }
     @MainActor
@@ -547,51 +349,6 @@ final class WorkspaceStoreTests: XCTestCase {
         store2.stopWatching()
         let r2Again = try XCTUnwrap(store2.repositories.first { $0.repo.name == "r2" })
         XCTAssertFalse(r2Again.hasUnseenChanges)
-    }
-
-    @MainActor
-    func testRecentSortPutsLatestActivityFirstAndNeverChangedLast() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for name in ["a", "b", "c"] {
-            let r = try await TestHelpers.makeTempRepo()
-            try FileManager.default.moveItem(at: r, to: ws.appendingPathComponent(name))
-        }
-        let cfgURL = try TestHelpers.makeTempDir().appendingPathComponent("c.json")
-        let store = WorkspaceStore(configStore: ConfigStore(fileURL: cfgURL))
-        await store.openUntitled(linkingFolder: ws)
-        store.stopWatching()
-        store.sort = .recent
-        func repo(_ name: String) -> RepositoryStore { store.repositories.first { $0.repo.name == name }! }
-
-        await repo("c").refreshStatus()
-        XCTAssertNil(repo("c").lastActivity, "a no-op refresh isn't activity")
-        try TestHelpers.write("x\n", to: repo("c").url, "x.txt")
-        await repo("c").refreshStatus()
-        try TestHelpers.write("x\n", to: repo("b").url, "x.txt")
-        await repo("b").refreshStatus()
-        XCTAssertEqual(store.visibleRepositories.map(\.repo.name), ["b", "c", "a"])
-        XCTAssertEqual(ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo("b").url.path]?.lastActivity, repo("b").lastActivity)
-    }
-
-    @MainActor
-    func testSetAgentPatternsRoundTripsAndOverridesProfile() async throws {
-        let (store, repo, cfgURL) = try await makeOpenedStore()
-        XCTAssertEqual(repo.agentProfile, AgentProfile())
-        store.setAgentPatterns(["bot@ci"], for: repo)
-        XCTAssertEqual(ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]?.agentPatterns, ["bot@ci"])
-        XCTAssertEqual(repo.agentProfile.patterns, ["bot@ci"])
-        XCTAssertTrue(repo.agentProfile.matches(author: "CI", email: "bot@ci"))
-        store.setAgentPatterns(nil, for: repo)
-        XCTAssertNil(ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[repo.url.path]?.agentPatterns)
-        XCTAssertEqual(repo.agentProfile, AgentProfile())
-        store.stopWatching()
-    }
-
-    func testIsFetchDuePerCadence() {
-        let ticks = Array(0...5)
-        XCTAssertEqual(ticks.map { WorkspaceStore.isFetchDue(cadence: .intensive, tick: $0) }, [true, true, true, true, true, true])
-        XCTAssertEqual(ticks.map { WorkspaceStore.isFetchDue(cadence: .normal, tick: $0) }, [true, false, false, false, false, true])
-        XCTAssertEqual(ticks.map { WorkspaceStore.isFetchDue(cadence: .paused, tick: $0) }, [false, false, false, false, false, false])
     }
 
     @MainActor

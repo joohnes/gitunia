@@ -2,16 +2,6 @@ import XCTest
 @testable import GituniaCore
 
 final class ConflictParserTests: XCTestCase {
-    func testFileWithNoMarkersIsASingleContextSegment() {
-        let text = "line1\nline2\nline3\n"
-        let segments = ConflictParser.parse(text)
-        XCTAssertEqual(segments, [.context(lines: ["line1", "line2", "line3"])])
-    }
-
-    func testEmptyFileHasNoSegments() {
-        XCTAssertEqual(ConflictParser.parse(""), [])
-    }
-
     func testSingleConflictBlockSplitsIntoOursAndTheirs() {
         let text = """
         before
@@ -59,24 +49,6 @@ final class ConflictParserTests: XCTestCase {
         XCTAssertEqual(theirs2.lines, ["two-theirs"])
     }
 
-    func testConflictBlockWithMultipleLinesPerSide() {
-        let text = """
-        <<<<<<< HEAD
-        mine1
-        mine2
-        =======
-        theirs1
-        theirs2
-        theirs3
-        >>>>>>> feature
-        """
-        let segments = ConflictParser.parse(text)
-        XCTAssertEqual(segments, [
-            .conflict(ours: ConflictSide(label: "HEAD", lines: ["mine1", "mine2"]),
-                      theirs: ConflictSide(label: "feature", lines: ["theirs1", "theirs2", "theirs3"])),
-        ])
-    }
-
     // MARK: - M2: merge.conflictStyle diff3/zdiff3 real conflicts
 
     /// Produces a real conflicted file's contents by actually merging two branches under the
@@ -111,35 +83,24 @@ final class ConflictParserTests: XCTestCase {
     /// >>>>>>> b1
     /// line3
     /// ```
-    /// The base ("line2" plus the "||||||| ..." marker) must never end up in `ours`.
-    func testDiff3BaseSectionExcludedFromOurs() async throws {
-        let text = try await makeRealConflict(conflictStyle: "diff3")
-        XCTAssertTrue(text.contains("|||||||"), "sanity: real git actually emitted a diff3 base section")
-        let segments = ConflictParser.parse(text)
-        let conflicts: [(ours: ConflictSide, theirs: ConflictSide)] = segments.compactMap {
-            if case .conflict(let ours, let theirs) = $0 { return (ours, theirs) } else { return nil }
+    /// zdiff3 emits the same shape here. The base ("line2" plus the "||||||| ..." marker) must
+    /// never end up in `ours`.
+    func testDiff3AndZdiff3BaseSectionExcludedFromOurs() async throws {
+        for style in ["diff3", "zdiff3"] {
+            let text = try await makeRealConflict(conflictStyle: style)
+            XCTAssertTrue(text.contains("|||||||"), "sanity: real git actually emitted a \(style) base section")
+            let segments = ConflictParser.parse(text)
+            let conflicts: [(ours: ConflictSide, theirs: ConflictSide)] = segments.compactMap {
+                if case .conflict(let ours, let theirs) = $0 { return (ours, theirs) } else { return nil }
+            }
+            guard let (ours, theirs) = conflicts.first else {
+                XCTFail("expected a conflict segment (\(style))")
+                continue
+            }
+            XCTAssertEqual(ours.lines, ["line2-MAIN"], style)
+            XCTAssertEqual(theirs.lines, ["line2-B1"], style)
+            XCTAssertFalse(ours.lines.contains("line2"), style)
+            XCTAssertFalse(ours.lines.contains { $0.hasPrefix("|||||||") }, style)
         }
-        guard let (ours, theirs) = conflicts.first else {
-            return XCTFail("expected a conflict segment")
-        }
-        XCTAssertEqual(ours.lines, ["line2-MAIN"])
-        XCTAssertEqual(theirs.lines, ["line2-B1"])
-        XCTAssertFalse(ours.lines.contains("line2"))
-        XCTAssertFalse(ours.lines.contains { $0.hasPrefix("|||||||") })
-    }
-
-    /// Same real-conflict setup under `merge.conflictStyle=zdiff3`.
-    func testZdiff3BaseSectionExcludedFromOurs() async throws {
-        let text = try await makeRealConflict(conflictStyle: "zdiff3")
-        XCTAssertTrue(text.contains("|||||||"), "sanity: real git actually emitted a zdiff3 base section")
-        let segments = ConflictParser.parse(text)
-        let conflicts: [(ours: ConflictSide, theirs: ConflictSide)] = segments.compactMap {
-            if case .conflict(let ours, let theirs) = $0 { return (ours, theirs) } else { return nil }
-        }
-        guard let (ours, theirs) = conflicts.first else {
-            return XCTFail("expected a conflict segment")
-        }
-        XCTAssertEqual(ours.lines, ["line2-MAIN"])
-        XCTAssertEqual(theirs.lines, ["line2-B1"])
     }
 }

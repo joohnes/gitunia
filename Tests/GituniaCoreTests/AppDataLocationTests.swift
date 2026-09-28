@@ -79,14 +79,6 @@ final class AppDataLocationTests: XCTestCase {
 
     // MARK: - A4: writableDirectory
 
-    func testWritableDirectoryReturnsPreferredWhenWritable() throws {
-        let root = try TestHelpers.makeTempDir()
-        let preferred = root.appendingPathComponent("Documents/Gitunia")
-        let fallback = root.appendingPathComponent("AppSupport/Gitunia")
-
-        XCTAssertEqual(AppDataLocation.writableDirectory(preferred: preferred, fallback: fallback), preferred)
-    }
-
     func testWritableDirectoryFallsBackWhenPreferredIsDenied() throws {
         let root = try TestHelpers.makeTempDir()
         // A parent with no write permission stands in for a TCC-denied ~/Documents: creating

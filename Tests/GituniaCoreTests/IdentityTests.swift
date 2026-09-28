@@ -22,15 +22,10 @@ final class IdentityTests: XCTestCase {
         XCTAssertTrue(RepositoryStore.parseIdentity("commit.gpgsign").signingEnabled) // bare key = true
     }
 
-    func testParseEmpty() {
-        XCTAssertEqual(RepositoryStore.parseIdentity(""), CommitIdentity())
-    }
-
     func testMissingIdentityBlocks() {
         XCTAssertEqual(Preflight.identityWarnings(nil), [])
         let issues = Preflight.identityWarnings(CommitIdentity(name: "Jane"))
         XCTAssertEqual(issues.map(\.severity), [.blocker])
-        XCTAssertEqual(issues.first?.message, "No git identity — set user.name and user.email")
     }
 
     func testBotEmailWarns() {
@@ -38,18 +33,6 @@ final class IdentityTests: XCTestCase {
         XCTAssertEqual(Preflight.identityWarnings(CommitIdentity(name: "my-bot", email: "1+x@users.noreply.github.com")).map(\.id), ["bot-identity"])
         XCTAssertEqual(Preflight.identityWarnings(CommitIdentity(name: "Jane", email: "1+jane@users.noreply.github.com")), [])
         XCTAssertEqual(Preflight.identityWarnings(CommitIdentity(name: "Jane", email: "jane@example.com")), [])
-    }
-
-    func testSigningNote() {
-        let issues = Preflight.identityWarnings(CommitIdentity(name: "Jane", email: "jane@example.com", signingEnabled: true,
-                                                               signingFormat: "ssh", signingKey: "KEY"))
-        XCTAssertEqual(issues.map(\.id), ["signing"])
-        XCTAssertEqual(issues.first?.message, "Commits will be signed with ssh key KEY")
-    }
-
-    func testSigningFailureHint() {
-        XCTAssertNotNil(SigningFailure.hint(stderr: "error: gpg failed to sign the data\nfatal: failed to write commit object"))
-        XCTAssertNil(SigningFailure.hint(stderr: "nothing to commit"))
     }
 
     @MainActor

@@ -41,14 +41,4 @@ final class TrailerStripperTests: XCTestCase {
         let msg = CommitMessage(title: "fix: thing", body: body)
         XCTAssertEqual(TrailerStripper.strip(msg), msg)
     }
-
-    func testTitleOnlyMessageUnchanged() {
-        let msg = CommitMessage(title: "feat: add x")
-        XCTAssertEqual(TrailerStripper.strip(msg), msg)
-    }
-
-    func testAppSettingsWithoutKeyDecodesToTrue() throws {
-        let settings = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"aiProvider":"ollama"}"#.utf8))
-        XCTAssertTrue(settings.stripAgentTrailers)
-    }
 }

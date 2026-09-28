@@ -158,6 +158,8 @@ final class UpdateCoordinator {
         case UpdateInstallError.noSignature: return "The release has no signature file."
         case UpdateInstallError.noPublicKey: return "This build can't verify updates."
         case UpdateInstallError.wrongBundle: return "The download didn't contain the expected Gitunia version."
+        case UpdateInstallError.differentSigner:
+            return "The update is signed by a different certificate — installing it would reset Gitunia's folder access. Download it manually if you trust it."
         case UpdateInstallError.failed(let message): return message
         case let e as URLError where e.code == .notConnectedToInternet || e.code == .networkConnectionLost:
             return "You're offline."

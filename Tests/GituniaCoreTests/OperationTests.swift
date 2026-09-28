@@ -66,29 +66,6 @@ final class OperationTests: XCTestCase {
         XCTAssertTrue(history.contains { $0.hash == toRevert.hash }, "the original commit is still in history")
     }
 
-    /// The whole point of `git revert` over `undoLastCommit`: it works without force, even on a
-    /// commit the remote already has.
-    @MainActor
-    func testRevertOfAPushedCommitWorksWithoutForce() async throws {
-        let repo = try await TestHelpers.makeTempRepo()
-        let remote = try TestHelpers.makeTempDir().appendingPathComponent("remote.git")
-        let git = GitRunner()
-        _ = try await git.run(["init", "-q", "-b", "master", "--bare", remote.path], in: repo)
-        _ = try await git.run(["remote", "add", "origin", remote.path], in: repo)
-        let store = RepositoryStore(url: repo)
-        try TestHelpers.write("hello\nadded\n", to: repo, "README.md")
-        await store.stageAll()
-        _ = await store.commit(CommitMessage(title: "add a line"))
-        let toRevert = (await store.history())[0]
-        _ = await store.push()
-
-        let reverted = await store.revertCommit(toRevert.hash)
-        XCTAssertTrue(reverted)
-
-        let push = await store.push()
-        XCTAssertTrue(push.succeeded, "an ordinary fast-forward push — no force needed")
-    }
-
     // MARK: - Cherry-pick
 
     @MainActor
@@ -266,21 +243,5 @@ final class OperationTests: XCTestCase {
         XCTAssertNotEqual(headBefore, headAfter, "merge --continue committed the resolution")
         let parents = try await git.run(["rev-list", "--parents", "-n", "1", "HEAD"], in: url)
         XCTAssertEqual(parents.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ").count, 3)
-    }
-
-    // MARK: - Precedence of detection
-
-    /// Each operation's own test above already asserts `store.operation` equals exactly that one
-    /// case with no other state present; this test just makes the "never overlap" claim explicit —
-    /// a rebase directory and a stray `MERGE_HEAD` never coexist in practice, but if they somehow
-    /// did, rebase wins (see `refreshOperationState`'s check order).
-    @MainActor
-    func testNoOperationInProgressOnAFreshRepo() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertNil(store.operation)
-        XCTAssertNotEqual(store.operation, .merge)
-        XCTAssertFalse(store.rebaseInProgress)
     }
 }

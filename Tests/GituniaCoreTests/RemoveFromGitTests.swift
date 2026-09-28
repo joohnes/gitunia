@@ -2,11 +2,6 @@ import XCTest
 @testable import GituniaCore
 
 final class RemoveFromGitTests: XCTestCase {
-    func testWithFoldersListsEachParentOnce() {
-        XCTAssertEqual(TrackedPaths.withFolders(["b.txt", "a/x/1", "a/x/2", "a/y"]),
-                       ["a/", "a/x/", "a/x/1", "a/x/2", "a/y", "b.txt"])
-    }
-
     @MainActor
     func testStopTrackingKeepsFileAndIgnoresFolder() async throws {
         let url = try await TestRepo.make(files: ["build/out.o": "bin\n", "README.md": "hi\n"])

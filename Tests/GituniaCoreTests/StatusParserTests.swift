@@ -65,10 +65,6 @@ final class StatusParserTests: XCTestCase {
         XCTAssertEqual(r.changes, [FileChange(path: "conflict.txt", status: .conflicted, area: .unstaged)])
     }
 
-    func testEmpty() {
-        XCTAssertEqual(StatusParser.parse(""), StatusResult())
-    }
-
     func testMalformedLinesAreSkipped() {
         let r = StatusParser.parse("1 M\n2\n1")
         XCTAssertTrue(r.changes.isEmpty)

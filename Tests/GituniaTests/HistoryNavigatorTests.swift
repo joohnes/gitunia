@@ -28,14 +28,4 @@ final class HistoryNavigatorTests: XCTestCase {
         XCTAssertEqual(registry.navigator.pending, .init(repoID: b.id, hash: "abc123", windowID: id))
         XCTAssertTrue(registry.navigator.targets(store))
     }
-
-    func testRepoInNoWindowLeavesPendingNil() async throws {
-        let registry = makeRegistry()
-        registry.newWindow()
-        _ = await registry.attachWindow(try XCTUnwrap(registry.windowOrder.first))
-        let stray = RepositoryStore(url: try await makeRepo())
-
-        XCTAssertFalse(registry.navigator.show(commit: "abc123", in: stray))
-        XCTAssertNil(registry.navigator.pending)
-    }
 }

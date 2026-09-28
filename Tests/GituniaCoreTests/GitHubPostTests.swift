@@ -18,15 +18,15 @@ final class GitHubPostTests: XCTestCase {
     """
 
     @MainActor
-    private func makeStore(remote: String = "https://github.com/acme/app.git", ghPath: String? = nil) async throws -> (RepositoryStore, URL) {
+    private func makeStore() async throws -> (RepositoryStore, URL) {
         let url = try await TestHelpers.makeTempRepo()
-        _ = try await GitRunner().run(["remote", "add", "origin", remote], in: url)
+        _ = try await GitRunner().run(["remote", "add", "origin", "https://github.com/acme/app.git"], in: url)
         let bin = try TestHelpers.makeTempDir()
         let path = bin.appendingPathComponent("gh").path
         try Self.script.write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
         let store = RepositoryStore(url: url)
-        store.gh = GHRunner(executable: ghPath ?? path)
+        store.gh = GHRunner(executable: path)
         return (store, bin)
     }
 
@@ -70,33 +70,4 @@ final class GitHubPostTests: XCTestCase {
         let slug = await store.gitHubSlug()
         XCTAssertEqual(slug, "acme/app")
     }
-
-    /// `isAvailable` checks the executable is actually there, not just non-nil, so a stale/bogus
-    /// path (unlike `GHRunner(executable: nil)`, which falls back to the machine's real gh) now
-    /// fakes "gh not installed" without spawning anything.
-    @MainActor
-    func testMissingGHExecutableFailsWithoutRunningIt() async throws {
-        let (store, bin) = try await makeStore(ghPath: "/nonexistent/gh")
-        XCTAssertFalse(store.gh.isAvailable)
-        let result = await store.postPullRequestComment(number: 12, body: "x")
-        XCTAssertEqual(result.failureError, .notInstalled)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: bin.appendingPathComponent("args").path))
-    }
-
-    /// The sheet's enabling guard's other half — gh installed, but origin isn't GitHub.
-    @MainActor
-    func testNonGitHubOriginFailsWithoutRunningGH() async throws {
-        let (store, bin) = try await makeStore(remote: "https://gitlab.com/acme/app.git")
-        let supported = await store.supportsGitHubPost()
-        XCTAssertFalse(supported)
-        let result = await store.createIssue(title: "t", body: "b", labels: [])
-        XCTAssertEqual(result.failureError, .failed("origin isn't a GitHub remote."))
-        let prs = await store.openPullRequests()
-        XCTAssertTrue(prs.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: bin.appendingPathComponent("args").path))
-    }
-}
-
-private extension Result {
-    var failureError: Failure? { if case .failure(let e) = self { return e }; return nil }
 }

@@ -11,6 +11,8 @@ public struct PreparedUpdate: Equatable, Sendable {
 
 public enum UpdateInstallError: Error, Equatable {
     case noPublicKey, noSignature, badSignature, wrongBundle
+    /// The new app doesn't meet the running app's designated requirement (another certificate).
+    case differentSigner
     case failed(String)
 }
 
@@ -32,12 +34,15 @@ public final class UpdateInstaller: UpdateInstalling {
     public let appURL: URL
     public let workDir: URL
     private let download: @Sendable (URL) async throws -> URL
+    private let pinnedRequirement: @Sendable (URL) async -> String?
 
     public init(publicKey: Data?, appURL: URL, workDir: URL,
+                pinnedRequirement: @escaping @Sendable (URL) async -> String? = UpdateInstaller.runningAppRequirement,
                 download: @escaping @Sendable (URL) async throws -> URL = UpdateInstaller.defaultDownload) {
         self.publicKey = publicKey
         self.appURL = appURL
         self.workDir = workDir
+        self.pinnedRequirement = pinnedRequirement
         self.download = download
     }
 
@@ -68,6 +73,37 @@ public final class UpdateInstaller: UpdateInstalling {
         guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: publicKey),
               let data = try? Data(contentsOf: dmg, options: .mappedIfSafe) else { return false }
         return key.isValidSignature(signature, for: data)
+    }
+
+    /// The requirement a replacement must meet: the running app's designated requirement, or nil when
+    /// there's nothing stable to pin. macOS ties folder-access grants to that requirement, so an update
+    /// meeting it keeps them. Ad-hoc's is its own cdhash (printed commented out, `# designated => cdhash
+    /// H"…"`) and an unsigned app has none; nil there lets the ad-hoc → certificate transition through.
+    public static func pinnedRequirement(codesignDisplay output: String) -> String? {
+        for line in output.split(separator: "\n") where line.hasPrefix("designated => ") {
+            let requirement = line.dropFirst("designated => ".count)
+            return requirement.contains("cdhash") ? nil : String(requirement)
+        }
+        return nil
+    }
+
+    /// `codesign -d -r-` on the running app; any failure means "nothing pinned", never "refuse".
+    public static let runningAppRequirement: @Sendable (URL) async -> String? = { app in
+        guard let r = try? await ProcessRunner.run(executable: "/usr/bin/codesign", arguments: ["-d", "-r-", app.path]) else { return nil }
+        return pinnedRequirement(codesignDisplay: r.stdout + "\n" + r.stderr)
+    }
+
+    /// Any Apple Developer ID signature for `identifier` — the one other signer an update may carry,
+    /// so moving from the self-signed certificate to a paid one later needs no manual download.
+    /// The Ed25519 DMG signature is what proves an update is ours; the pin only keeps folder-access
+    /// grants from resetting on every update.
+    public static func developerIDRequirement(identifier: String) -> String {
+        #"identifier "\#(identifier)" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"#
+    }
+
+    /// Whether `app`'s signature is valid and meets `requirement`.
+    public static func satisfies(_ app: URL, requirement: String) async -> Bool {
+        (try? await run("/usr/bin/codesign", ["--verify", "--strict", "-R", "=" + requirement, app.path])) != nil
     }
 
     /// A read-only volume (running straight from the dmg) or a Gatekeeper-translocated copy can't
@@ -104,6 +140,11 @@ public final class UpdateInstaller: UpdateInstalling {
                 from: Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any]
             guard plist?["CFBundleIdentifier"] as? String == Self.bundleIdentifier,
                   plist?["CFBundleShortVersionString"] as? String == release.version else { throw UpdateInstallError.wrongBundle }
+            if let requirement = await pinnedRequirement(appURL),
+               !(await Self.satisfies(app, requirement: requirement)),
+               !(await Self.satisfies(app, requirement: Self.developerIDRequirement(identifier: Self.bundleIdentifier))) {
+                throw UpdateInstallError.differentSigner
+            }
             try await Self.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", app.path])
             try? fm.removeItem(at: dmg)
             return PreparedUpdate(version: release.version, bundleURL: app)

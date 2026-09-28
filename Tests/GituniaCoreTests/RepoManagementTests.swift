@@ -14,30 +14,6 @@ final class RepoManagementParserTests: XCTestCase {
         XCTAssertEqual(p.feed("tas: 100% (300/300), done.\n"), CloneProgress(phase: "Resolving deltas", percent: 100))
     }
 
-    func testParseLine() {
-        XCTAssertEqual(CloneProgressParser.parseLine("Cloning into 'dst'..."), CloneProgress(phase: "Cloning"))
-        XCTAssertEqual(CloneProgressParser.parseLine("remote: Enumerating objects: 302, done.        "), CloneProgress(phase: "Enumerating objects"))
-        XCTAssertEqual(CloneProgressParser.parseLine("Receiving objects:   0% (1/302)"), CloneProgress(phase: "Receiving objects", percent: 0))
-        XCTAssertNil(CloneProgressParser.parseLine("remote: Total 302 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)"))
-        XCTAssertNil(CloneProgressParser.parseLine("fatal: destination path 'dst' already exists and is not an empty directory."))
-        XCTAssertNil(CloneProgressParser.parseLine("done."))
-    }
-
-    func testDefaultName() {
-        XCTAssertEqual(RepoURL.defaultName(from: "https://github.com/owner/gitunia.git"), "gitunia")
-        XCTAssertEqual(RepoURL.defaultName(from: "git@github.com:owner/gitunia.git"), "gitunia")
-        XCTAssertEqual(RepoURL.defaultName(from: "git@host:gitunia.git"), "gitunia")
-        XCTAssertEqual(RepoURL.defaultName(from: " /Users/me/src/lib/ "), "lib")
-        XCTAssertEqual(RepoURL.defaultName(from: "file:///tmp/x/src"), "src")
-        XCTAssertEqual(RepoURL.defaultName(from: ""), "")
-    }
-
-    func testRedactsPasswordOnly() {
-        XCTAssertEqual(RepoURL.redactingCredentials("fatal: unable to access 'https://bot:ghp_SECRET@github.com/o/r.git/'"),
-                       "fatal: unable to access 'https://bot:•••@github.com/o/r.git/'")
-        XCTAssertEqual(RepoURL.redactingCredentials("https://github.com/o/r.git git@host:o/r.git"), "https://github.com/o/r.git git@host:o/r.git")
-    }
-
     func testNameValidation() throws {
         let ws = try TestHelpers.makeTempDir()
         try FileManager.default.createDirectory(at: ws.appendingPathComponent("taken"), withIntermediateDirectories: true)

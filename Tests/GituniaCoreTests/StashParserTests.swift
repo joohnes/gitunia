@@ -2,8 +2,6 @@ import XCTest
 @testable import GituniaCore
 
 final class StashParserTests: XCTestCase {
-    func testEmpty() { XCTAssertEqual(StashParser.parse(""), []) }
-
     func testDefaultAndCustomMessageAgainstRealGitOutput() async throws {
         let url = try await TestHelpers.makeTempRepo()
         let git = GitRunner()

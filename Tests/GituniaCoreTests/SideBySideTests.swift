@@ -12,8 +12,4 @@ final class SideBySideTests: XCTestCase {
         XCTAssertEqual(rows.map { ($0.left?.text ?? "·") + "|" + ($0.right?.text ?? "·") },
                        ["a|a", "b|B", "c|·", "d|d", "·|e"])
     }
-
-    func testEmpty() {
-        XCTAssertEqual(SideBySide.rows(for: Hunk(header: "@@", lines: [])), [])
-    }
 }

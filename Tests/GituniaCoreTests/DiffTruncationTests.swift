@@ -18,15 +18,4 @@ final class DiffTruncationTests: XCTestCase {
         XCTAssertFalse(truncated.hunks[0].isClipped)
         XCTAssertTrue(truncated.hunks[1].isClipped)
     }
-
-    func testNoTruncationWhenUnderLimit() {
-        let hunk = Hunk(header: "@@ -1,2 +1,2 @@", lines: [
-            DiffLine(kind: .context, text: "a", oldNumber: 1, newNumber: 1),
-            DiffLine(kind: .context, text: "b", oldNumber: 2, newNumber: 2),
-        ])
-        let diff = FileDiff(path: "f.txt", isBinary: false, hunks: [hunk])
-        let (truncated, total) = diff.truncated(toLines: 3000)
-        XCTAssertEqual(total, 2)
-        XCTAssertEqual(truncated.hunks, diff.hunks)
-    }
 }

@@ -10,35 +10,19 @@ final class SecretScannerTests: XCTestCase {
         XCTAssertTrue(SecretScanner.scan(diff).isEmpty)
     }
 
-    func testDetectsPrivateKeyHeader() {
-        let diff = "+-----BEGIN RSA PRIVATE KEY-----\n+MIIEpAIBAAKCAQEA...\n"
-        XCTAssertEqual(SecretScanner.scan(diff), ["a private key"])
-    }
-
-    func testDetectsAWSAccessKeyID() {
-        let diff = "+aws_access_key_id = AKIAABCDEFGHIJKLMNOP"
-        XCTAssertEqual(SecretScanner.scan(diff), ["an AWS access key ID"])
-    }
-
-    func testDetectsGitHubToken() {
-        let diff = "+GITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz"
-        XCTAssertEqual(SecretScanner.scan(diff), ["a GitHub token"])
-    }
-
-    func testDetectsSlackToken() {
-        // Split so the literal never looks like a real token to GitHub push protection.
-        let diff = "+SLACK_BOT_TOKEN=" + "xox" + "b-1234567890-abcdefghijklmno"
-        XCTAssertEqual(SecretScanner.scan(diff), ["a Slack token"])
-    }
-
-    func testDetectsAPIKey() {
-        let diff = "+OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456"
-        XCTAssertEqual(SecretScanner.scan(diff), ["an API key"])
-    }
-
-    func testDetectsGenericSecretAssignment() {
-        let diff = "+password: 'sup3rSecretValue123456'"
-        XCTAssertEqual(SecretScanner.scan(diff), ["a hardcoded password/secret/token"])
+    func testDetectsEachKind() {
+        let cases: [(diff: String, label: String)] = [
+            ("+-----BEGIN RSA PRIVATE KEY-----\n+MIIEpAIBAAKCAQEA...\n", "a private key"),
+            ("+aws_access_key_id = AKIAABCDEFGHIJKLMNOP", "an AWS access key ID"),
+            ("+GITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz", "a GitHub token"),
+            // Split so the literal never looks like a real token to GitHub push protection.
+            ("+SLACK_BOT_TOKEN=" + "xox" + "b-1234567890-abcdefghijklmno", "a Slack token"),
+            ("+OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456", "an API key"),
+            ("+password: 'sup3rSecretValue123456'", "a hardcoded password/secret/token"),
+        ]
+        for c in cases {
+            XCTAssertEqual(SecretScanner.scan(c.diff), [c.label], c.label)
+        }
     }
 
     func testDoesNotFlagShortValues() {

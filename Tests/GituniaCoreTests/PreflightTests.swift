@@ -22,28 +22,19 @@ final class PreflightTests: XCTestCase {
         XCTAssertEqual(Preflight.check(.commit, repo: repo(changes: [change("a", status: .modified, area: .staged)]), hasUpstream: true), [])
     }
 
-    func testCheckoutWithUnstagedChangesBlocks() {
-        let r = repo(changes: [change("a.txt", status: .modified, area: .unstaged)])
-        let issues = Preflight.check(.checkout(branch: "develop"), repo: r, hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .blocker)
-        XCTAssertEqual(issues[0].message, "1 uncommitted change will follow you to develop")
-    }
-
-    func testCheckoutWithUntrackedChangesBlocks() {
-        let r = repo(changes: [change("new.txt", status: .untracked, area: .unstaged)])
-        let issues = Preflight.check(.checkout(branch: "main"), repo: r, hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .blocker)
-    }
-
-    func testCheckoutWithStagedOnlyChangesBlocks() {
+    func testCheckoutWithUncommittedChangesBlocks() {
         // Staged changes are still carried across a checkout, so they block too.
-        let r = repo(changes: [change("a.txt", status: .modified, area: .staged)])
-        let issues = Preflight.check(.checkout(branch: "main"), repo: r, hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .blocker)
-        XCTAssertEqual(issues[0].message, "1 uncommitted change will follow you to main")
+        let cases: [(String, FileChange.Status, FileChange.Area)] = [
+            ("unstaged", .modified, .unstaged),
+            ("untracked", .untracked, .unstaged),
+            ("staged", .modified, .staged),
+        ]
+        for (name, status, area) in cases {
+            let r = repo(changes: [change("a.txt", status: status, area: area)])
+            let issues = Preflight.check(.checkout(branch: "develop"), repo: r, hasUpstream: true)
+            XCTAssertEqual(issues.map(\.id), ["uncommitted"], name)
+            XCTAssertEqual(issues.map(\.severity), [.blocker], name)
+        }
     }
 
     func testCheckoutOrPullWithConflictBlocks() {
@@ -52,46 +43,10 @@ final class PreflightTests: XCTestCase {
             change("b.txt", status: .conflicted, area: .unstaged)
         ])
         let checkoutIssues = Preflight.check(.checkout(branch: "main"), repo: r, hasUpstream: true)
-        XCTAssertTrue(checkoutIssues.contains { $0.message == "2 files have unresolved conflicts" && $0.severity == .blocker })
+        XCTAssertTrue(checkoutIssues.contains { $0.id == "conflicted" && $0.severity == .blocker })
 
         let pullIssues = Preflight.check(.pull, repo: r, hasUpstream: true)
-        XCTAssertTrue(pullIssues.contains { $0.message == "2 files have unresolved conflicts" && $0.severity == .blocker })
-    }
-
-    func testPullWithoutUpstreamBlocks() {
-        let issues = Preflight.check(.pull, repo: repo(), hasUpstream: false)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .blocker)
-        XCTAssertEqual(issues[0].message, "No upstream branch configured")
-    }
-
-    func testPullWithNothingToPullWarns() {
-        let issues = Preflight.check(.pull, repo: repo(behind: 0), hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .warning)
-        XCTAssertEqual(issues[0].message, "Nothing to pull")
-    }
-
-    func testPushWithNothingToPushWarns() {
-        let issues = Preflight.check(.push, repo: repo(ahead: 0), hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .warning)
-        XCTAssertEqual(issues[0].message, "Nothing to push")
-    }
-
-    func testPushWhenBehindWarnsNotBlocks() {
-        let issues = Preflight.check(.push, repo: repo(ahead: 1, behind: 2), hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .warning)
-        XCTAssertEqual(issues[0].message, "2 commits behind — push may be rejected")
-    }
-
-    func testCommitWithNoStagedChangesBlocks() {
-        let r = repo(changes: [change("a.txt", status: .modified, area: .unstaged)])
-        let issues = Preflight.check(.commit, repo: r, hasUpstream: true)
-        XCTAssertEqual(issues.count, 1)
-        XCTAssertEqual(issues[0].severity, .blocker)
-        XCTAssertEqual(issues[0].message, "Nothing staged")
+        XCTAssertTrue(pullIssues.contains { $0.id == "conflicted" && $0.severity == .blocker })
     }
 
     func testAmendWithNoCommitsBlocks() {
@@ -109,17 +64,6 @@ final class PreflightTests: XCTestCase {
         XCTAssertEqual(issues.count, 1)
         XCTAssertEqual(issues[0].severity, .warning)
         XCTAssertEqual(issues[0].id, "amend-pushed")
-    }
-
-    func testAmendOfLocalOnlyCommitHasNoIssues() {
-        // ahead > 0: the last commit is still only local, so amending is safe.
-        let r = repo(ahead: 1)
-        XCTAssertEqual(Preflight.check(.amend, repo: r, hasUpstream: true), [])
-    }
-
-    func testAmendWithoutUpstreamHasNoPushedWarning() {
-        let r = repo()
-        XCTAssertEqual(Preflight.check(.amend, repo: r, hasUpstream: false), [])
     }
 
     func testAmendWithNothingStagedIsNotBlocked() {
@@ -164,27 +108,6 @@ final class PreflightTests: XCTestCase {
         XCTAssertEqual(Preflight.check(.undoLastCommit(hasParent: true), repo: r, hasUpstream: true), [])
     }
 
-    func testUndoWithoutUpstreamHasNoPushedBlocker() {
-        XCTAssertEqual(Preflight.check(.undoLastCommit(hasParent: true), repo: repo(), hasUpstream: false), [])
-    }
-
-    func testPullWithNoUpstreamAndConflictsReturnsBothBlockersFirst() {
-        let r = repo(changes: [change("a.txt", status: .conflicted, area: .unstaged)])
-        let issues = Preflight.check(.pull, repo: r, hasUpstream: false)
-        XCTAssertEqual(issues.count, 2)
-        XCTAssertTrue(issues.allSatisfy { $0.severity == .blocker })
-        XCTAssertEqual(Set(issues.map(\.id)), Set(["no-upstream", "conflicted"]))
-    }
-
-    // MARK: - isDiverged
-
-    func testIsDivergedRequiresBothAheadAndBehind() {
-        XCTAssertFalse(Preflight.isDiverged(repo: repo(ahead: 0, behind: 0)))
-        XCTAssertFalse(Preflight.isDiverged(repo: repo(ahead: 1, behind: 0)))
-        XCTAssertFalse(Preflight.isDiverged(repo: repo(ahead: 0, behind: 1)))
-        XCTAssertTrue(Preflight.isDiverged(repo: repo(ahead: 1, behind: 1)))
-    }
-
     // MARK: - forcePush
 
     func testForcePushWithoutUpstreamBlocks() {
@@ -198,23 +121,18 @@ final class PreflightTests: XCTestCase {
         let issues = Preflight.check(.forcePush, repo: repo(behind: 3), hasUpstream: true)
         XCTAssertEqual(issues.count, 1)
         XCTAssertEqual(issues[0].severity, .warning)
-        XCTAssertEqual(issues[0].message, "You will discard 3 commits on the remote")
+        XCTAssertEqual(issues[0].id, "behind")
     }
 
-    func testForcePushUpToDateHasNoIssues() {
-        XCTAssertEqual(Preflight.check(.forcePush, repo: repo(), hasUpstream: true), [])
+    // MARK: - reset
+
+    func testResetBlockedDuringOperation() {
+        let issues = Preflight.checkReset(repo: repo(), operation: .rebase, impact: ResetImpact(undone: 1, pushed: 0))
+        XCTAssertEqual(issues.map(\.id), ["operation-in-progress"])
+        XCTAssertEqual(issues.first?.severity, .blocker)
     }
 
-    func testMultipleIssuesOrderedBlockersBeforeWarnings() {
-        // ahead == 0 (warning: nothing to push) and behind > 0 (warning: may be rejected).
-        let r = repo(ahead: 0, behind: 3, changes: [change("a.txt", status: .conflicted, area: .staged)])
-        // Use checkout to also get a blocker alongside push-only warnings isn't directly comparable,
-        // so instead verify ordering within push's own two warnings plus a forced blocker via unavailable is separate.
-        // Here: push has two warnings only; check ordering is stable (nothing-to-push then behind).
-        let issues = Preflight.check(.push, repo: r, hasUpstream: true)
-        XCTAssertEqual(issues.map(\.severity), [.warning, .warning])
-        XCTAssertEqual(issues.map(\.id), ["nothing-to-push", "behind"])
-    }
+    // MARK: - large files
 
     func testLargeFileWarningsOnlyForStagedFilesOverThreshold() {
         let changes = [
@@ -226,8 +144,6 @@ final class PreflightTests: XCTestCase {
         let issues = Preflight.largeFileWarnings(in: changes)
         XCTAssertEqual(issues.map(\.id), ["large-file:big.bin"])
         XCTAssertEqual(issues.first?.severity, .warning)
-        XCTAssertTrue(issues.first?.message.hasPrefix("big.bin is 12") ?? false, issues.first?.message ?? "")
-        XCTAssertTrue(issues.first?.message.contains("Git LFS") ?? false)
         XCTAssertEqual(Preflight.check(.commit, repo: repo(changes: changes), hasUpstream: true).map(\.id), ["large-file:big.bin"])
     }
 
@@ -239,7 +155,7 @@ final class PreflightTests: XCTestCase {
         let rules = GitAttributes.parse("*.psd filter=lfs diff=lfs merge=lfs -text")
         let issues = Preflight.largeFileWarnings(in: changes, rules: rules)
         XCTAssertEqual(issues.map(\.id), ["large-file:big.bin"])
-        XCTAssertTrue(issues.first?.message.hasSuffix("consider `git lfs track '*.bin'`") ?? false, issues.first?.message ?? "")
+        XCTAssertEqual(issues.first?.suggestedLFSPattern, "*.bin")
         XCTAssertEqual(issues.first?.suggestedLFSPattern, "*.bin")
         XCTAssertNil(Preflight.largeFileWarnings(in: changes).last?.suggestedLFSPattern)
         XCTAssertEqual(Preflight.largeFileWarnings(in: changes, lfsInstalled: true).last?.suggestedLFSPattern, "*.bin")

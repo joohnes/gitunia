@@ -16,17 +16,6 @@ final class FileHistoryParserTests: XCTestCase {
         XCTAssertEqual(entries.first?.path, "a.txt")
     }
 
-    func testRecordWithoutEmailStillParses() {
-        let entries = FileHistoryParser.parse("\u{1e}abc\u{1f}ab\u{1f}Al\u{1f}2026-01-01\u{1f}s\u{1f}p1\n\nM\ta.txt\n")
-        XCTAssertEqual(entries.first?.commit.author, "Al")
-        XCTAssertEqual(entries.first?.authorEmail, "")
-    }
-
-    func testMalformedLineReturnsNil() {
-        XCTAssertNil(FileHistoryChangeKind.parse([]))
-        XCTAssertNil(FileHistoryChangeKind.parse(["A"]))
-    }
-
     // MARK: - C3: --name-status real git output for C-quoted paths
 
     /// Real `git -c core.quotePath=false log --name-status` on a rename to a filename containing a

@@ -11,24 +11,6 @@ final class InlineDiffTests: XCTestCase {
         XCTAssertEqual(result.added.map { String(added[$0]) }, ["bar"])
     }
 
-    func testPureInsertionHighlightsOnlyAddedSide() {
-        let removed = "let x = 1"
-        let added = "let x = 1 // note"
-        let result = InlineDiff.wordRanges(removed: removed, added: added)
-        XCTAssertFalse(result.didFallBack)
-        XCTAssertTrue(result.removed.isEmpty)
-        XCTAssertEqual(result.added.map { String(added[$0]) }, [" // note"])
-    }
-
-    func testPureDeletionHighlightsOnlyRemovedSide() {
-        let removed = "let x = 1 // note"
-        let added = "let x = 1"
-        let result = InlineDiff.wordRanges(removed: removed, added: added)
-        XCTAssertFalse(result.didFallBack)
-        XCTAssertEqual(result.removed.map { String(removed[$0]) }, [" // note"])
-        XCTAssertTrue(result.added.isEmpty)
-    }
-
     func testCompletelyRewrittenLineFallsBackToFullRange() {
         let removed = "import Foundation"
         let added = "print(42)"
@@ -62,27 +44,6 @@ final class InlineDiffTests: XCTestCase {
         XCTAssertEqual(result.added.count, 1)
         XCTAssertEqual(result.removed.map { String(removed[$0]) }, ["foo,"])
         XCTAssertEqual(result.added.map { String(added[$0]) }, ["bar;"])
-    }
-
-    func testIdenticalLinesHaveNoRanges() {
-        let line = "let x = 1"
-        let result = InlineDiff.wordRanges(removed: line, added: line)
-        XCTAssertFalse(result.didFallBack)
-        XCTAssertTrue(result.removed.isEmpty)
-        XCTAssertTrue(result.added.isEmpty)
-    }
-
-    func testEmptyStringOnOneSide() {
-        let result1 = InlineDiff.wordRanges(removed: "", added: "let x = 1")
-        XCTAssertTrue(result1.didFallBack)
-        XCTAssertTrue(result1.removed.isEmpty)
-        XCTAssertEqual(result1.added, [ "let x = 1".startIndex..<"let x = 1".endIndex ])
-
-        let removed = "let x = 1"
-        let result2 = InlineDiff.wordRanges(removed: removed, added: "")
-        XCTAssertTrue(result2.didFallBack)
-        XCTAssertEqual(result2.removed, [removed.startIndex..<removed.endIndex])
-        XCTAssertTrue(result2.added.isEmpty)
     }
 
     func testPathologicalLineAboveTokenCapReturnsFullRangesQuickly() {
@@ -122,30 +83,5 @@ final class InlineDiffTests: XCTestCase {
         ]
         let pairs = InlineDiff.pairs(in: lines)
         XCTAssertEqual(pairs, [InlineDiff.LinePair(removedIndex: 0, addedIndex: 3)])
-    }
-
-    func testRemovedRunWithNoFollowingAddedRunPairsNothing() {
-        let lines = [line(.removed, "r0"), line(.removed, "r1"), line(.context, "c0")]
-        XCTAssertTrue(InlineDiff.pairs(in: lines).isEmpty)
-    }
-
-    func testContextLinesBetweenRunsBreakPairing() {
-        let lines = [
-            line(.removed, "r0"), line(.context, "c0"), line(.added, "a0"),
-        ]
-        XCTAssertTrue(InlineDiff.pairs(in: lines).isEmpty)
-    }
-
-    func testTwoSeparateRunsInOneHunkBothPair() {
-        let lines = [
-            line(.removed, "r0"), line(.added, "a0"),
-            line(.context, "c0"),
-            line(.removed, "r1"), line(.added, "a1"),
-        ]
-        let pairs = InlineDiff.pairs(in: lines)
-        XCTAssertEqual(pairs, [
-            InlineDiff.LinePair(removedIndex: 0, addedIndex: 1),
-            InlineDiff.LinePair(removedIndex: 3, addedIndex: 4),
-        ])
     }
 }

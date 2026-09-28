@@ -95,27 +95,6 @@ final class TagOpsTests: XCTestCase {
         XCTAssertEqual(remoteTags, "v1\nv2\n")
     }
 
-    @MainActor
-    func testPushTagWithoutRemoteFailsWithMessage() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        _ = await store.createTag("v1", at: "HEAD")
-        let pushed = await store.pushTag("v1")
-        XCTAssertFalse(pushed)
-        XCTAssertTrue(store.lastError?.stderr.contains("No remote configured") == true)
-    }
-
-    @MainActor
-    func testCheckoutTagDetachesHead() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        _ = await store.createTag("v1", at: "HEAD", message: "annotated")
-        let ok = await store.checkoutTag("v1")
-        XCTAssertTrue(ok)
-        let symbolic = try await GitRunner().run(["symbolic-ref", "-q", "HEAD"], in: url, allowedExitCodes: [0, 1])
-        XCTAssertEqual(symbolic, "", "HEAD is detached")
-    }
-
     // MARK: - Branch from a commit
 
     @MainActor

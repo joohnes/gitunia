@@ -23,12 +23,18 @@ extension RepositoryStore {
         }.value
     }
 
+    /// Observation fires on every write, equal value or not — so a status tick that changed nothing
+    /// would still re-render every view reading that property. Writes only a real difference.
+    func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<RepositoryStore, T>, _ value: T) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+
     public func refreshStatus() async {
         guard FileManager.default.fileExists(atPath: url.path) else {
-            repo.isAvailable = false
+            update(\.repo.isAvailable, false)
             return
         }
-        repo.isAvailable = true
+        update(\.repo.isAvailable, true)
         statusGeneration += 1
         let gen = statusGeneration
         do {
@@ -57,12 +63,19 @@ extension RepositoryStore {
             guard gen == statusGeneration else { return }
             // The first load has nothing to compare against — every branch would read as "added".
             let beforeEvents = hasLoadedStatus ? eventSnapshot : nil
-            repo.branch = status.branch
-            repo.headOID = status.headOID
-            repo.ahead = status.ahead
-            repo.behind = status.behind
+            // Built on a copy and assigned once, only if it differs (see `update`).
+            var next = repo
+            next.branch = status.branch
+            next.headOID = status.headOID
+            next.ahead = status.ahead
+            next.behind = status.behind
+            next.changes = sizedChanges
+            let head = logRecords.first
+            next.lastCommitSummary = head?.first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            next.lastCommitAuthor = head.flatMap { $0.count > 1 ? String($0[1]) : nil }
+            next.lastCommitEmail = head.flatMap { $0.count > 2 ? String($0[2]) : nil }
             let oldChanges = repo.changes
-            repo.changes = sizedChanges
+            update(\.repo, next)
             let newFingerprint = repo.fingerprint
             // The fingerprint ignores content; sizes also catch a re-edit of an already-modified file.
             // ponytail: a same-size re-edit still slips through — add mtimes to `withSizes` if that bites.
@@ -74,16 +87,12 @@ extension RepositoryStore {
                 if lastViewedFingerprint == nil { lastViewedFingerprint = newFingerprint }
                 onFingerprintChange?(self)
             }
-            branches = BranchParser.parse(refsResult)
-            hasUpstream = upstream != nil
+            update(\.branches, BranchParser.parse(refsResult))
+            update(\.hasUpstream, upstream != nil)
             let upstreamParts = (upstream ?? "").split(separator: "/", maxSplits: 1).map(String.init)
-            upstreamRemote = upstreamParts.first
-            upstreamBranch = upstreamParts.count == 2 ? upstreamParts[1] : nil
-            let head = logRecords.first
-            repo.lastCommitSummary = head?.first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            repo.lastCommitAuthor = head.flatMap { $0.count > 1 ? String($0[1]) : nil }
-            repo.lastCommitEmail = head.flatMap { $0.count > 2 ? String($0[2]) : nil }
-            hasParentCommit = logRecords.count > 1
+            update(\.upstreamRemote, upstreamParts.first)
+            update(\.upstreamBranch, upstreamParts.count == 2 ? upstreamParts[1] : nil)
+            update(\.hasParentCommit, logRecords.count > 1)
             refreshOperationState()
             hasLoadedStatus = true
             if let beforeEvents, let onEvents {
@@ -142,24 +151,19 @@ extension RepositoryStore {
     /// their ordering, just exhaustive.
     private func refreshOperationState() {
         guard let gitDir = gitDirURL() else {
-            operation = nil
+            update(\.operation, nil)
             return
         }
         let fm = FileManager.default
         func exists(_ name: String) -> Bool { fm.fileExists(atPath: gitDir.appendingPathComponent(name).path) }
-        if exists("rebase-merge") || exists("rebase-apply") {
-            operation = .rebase
-        } else if exists("MERGE_HEAD") {
-            operation = .merge
-        } else if exists("CHERRY_PICK_HEAD") {
-            operation = .cherryPick
-        } else if exists("REVERT_HEAD") {
-            operation = .revert
-        } else if exists("BISECT_LOG") {
-            operation = .bisect
-        } else {
-            operation = nil
-        }
+        let found: GitOperation? =
+            if exists("rebase-merge") || exists("rebase-apply") { .rebase }
+            else if exists("MERGE_HEAD") { .merge }
+            else if exists("CHERRY_PICK_HEAD") { .cherryPick }
+            else if exists("REVERT_HEAD") { .revert }
+            else if exists("BISECT_LOG") { .bisect }
+            else { nil }
+        update(\.operation, found)
     }
 
     // MARK: - Review point
@@ -179,7 +183,7 @@ extension RepositoryStore {
     /// Only runs when `reviewedHead` or HEAD moved since last time.
     private func refreshReviewState() async {
         guard let reviewed = reviewedHead, let head = repo.headOID else {
-            unreviewedCount = nil; reviewPointMissing = false; reviewStateKey = nil
+            update(\.unreviewedCount, nil); update(\.reviewPointMissing, false); reviewStateKey = nil
             return
         }
         let key = "\(reviewed)-\(head)"
@@ -204,8 +208,8 @@ extension RepositoryStore {
     /// check here if that staleness turns out to matter in practice.
     private func refreshBaseAheadCountIfNeeded() async {
         guard let branch = repo.branch else {
-            baseAheadCount = nil
-            baseAheadBranch = nil
+            update(\.baseAheadCount, nil)
+            update(\.baseAheadBranch, nil)
             lastBaseAheadCheckBranch = nil
             return
         }

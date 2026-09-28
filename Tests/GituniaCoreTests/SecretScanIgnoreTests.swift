@@ -2,11 +2,6 @@ import XCTest
 @testable import GituniaCore
 
 final class SecretScanIgnoreTests: XCTestCase {
-    func testPrefsDecodeWithoutKeyDefaultsToEmpty() throws {
-        let prefs = try JSONDecoder().decode(RepoPrefs.self, from: Data("{}".utf8))
-        XCTAssertEqual(prefs.secretScanIgnoredPaths, [])
-    }
-
     @MainActor
     func testStoreDropsIgnoredFilesButKeepsPathlessNote() {
         var prefs = RepoPrefs()

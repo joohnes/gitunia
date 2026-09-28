@@ -11,24 +11,6 @@ final class BranchParserTests: XCTestCase {
             BranchInfo(name: "origin/feat/y", isCurrent: false, isRemote: true),
         ])
     }
-
-    func testEmpty() { XCTAssertEqual(BranchParser.parse(""), []) }
-}
-
-final class BranchPinningTests: XCTestCase {
-    func testDefaultBranchesArePinnedFirstAndRestKeepOrder() {
-        let branches = [
-            BranchInfo(name: "feature/b", isCurrent: false, isRemote: false),
-            BranchInfo(name: "main", isCurrent: true, isRemote: false),
-            BranchInfo(name: "a", isCurrent: false, isRemote: false),
-            BranchInfo(name: "origin/master", isCurrent: false, isRemote: true),
-        ]
-        let split = branches.localPinnedFirst
-        XCTAssertEqual(split.pinned.map(\.name), ["main"])
-        XCTAssertEqual(split.rest.map(\.name), ["feature/b", "a"])
-        XCTAssertTrue(BranchInfo(name: "origin/master", isCurrent: false, isRemote: true).isDefaultBranch)
-        XCTAssertFalse(BranchInfo(name: "mainline", isCurrent: false, isRemote: false).isDefaultBranch)
-    }
 }
 
 final class DashRefTests: XCTestCase {

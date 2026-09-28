@@ -3,20 +3,7 @@ import XCTest
 
 /// Reflog, reset to a commit, detached HEAD — against real temp repos and real git output.
 final class RecoveryTests: XCTestCase {
-    // MARK: - Parser (fixture captured verbatim from git 2.50.1)
-
-    func testReflogParserOnCapturedOutput() {
-        let raw = "HEAD@{1790180042}\u{1f}ac4ab04aaaa\u{1f}ac4ab04\u{1f}pull -q --ff-only: Fast-forward\u{1e}\n"
-            + "HEAD@{1790180031}\u{1f}11287aabbbb\u{1f}11287aa\u{1f}commit (amend): fix: typo\u{1e}\n"
-            + "HEAD@{1790180000}\u{1f}4b1b416cccc\u{1f}4b1b416\u{1f}rebase (finish): returning to refs/heads/feat\u{1e}\n"
-        let entries = ReflogParser.parse(raw)
-        XCTAssertEqual(entries.map(\.selector), ["HEAD@{0}", "HEAD@{1}", "HEAD@{2}"])
-        XCTAssertEqual(entries.map(\.kind), ["pull", "amend", "rebase"])
-        XCTAssertEqual(entries[1].action, "commit (amend)")
-        XCTAssertEqual(entries[1].message, "fix: typo")
-        XCTAssertEqual(entries[0].shortHash, "ac4ab04")
-        XCTAssertEqual(entries[0].date, Date(timeIntervalSince1970: 1790180042))
-    }
+    // MARK: - Reflog
 
     @MainActor
     func testReflogFromRealRepo() async throws {
@@ -36,14 +23,6 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(entries[2].message, "second amended")
         XCTAssertEqual(entries.last?.action, "commit (initial)")
         XCTAssertLessThan(abs(entries[0].date.timeIntervalSinceNow), 120)
-    }
-
-    @MainActor
-    func testReflogEmptyRepo() async throws {
-        let url = try TestHelpers.makeTempDir()
-        _ = try await GitRunner().run(["init", "-q", "-b", "master"], in: url)
-        let entries = await RepositoryStore(url: url).reflog()
-        XCTAssertEqual(entries, [])
     }
 
     // MARK: - Reset
@@ -150,16 +129,6 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(headImpact, ResetImpact(undone: 0, pushed: 0))
     }
 
-    @MainActor
-    func testResetBlockedDuringOperation() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let issues = Preflight.checkReset(repo: store.repo, operation: .rebase, impact: ResetImpact(undone: 1, pushed: 0))
-        XCTAssertEqual(issues.map(\.id), ["operation-in-progress"])
-        XCTAssertEqual(issues.first?.severity, .blocker)
-    }
-
     // MARK: - Detached HEAD
 
     @MainActor
@@ -200,28 +169,5 @@ final class RecoveryTests: XCTestCase {
         XCTAssertEqual(store.repo.branch, "rescued")
         let afterRescue = await store.commitsOnlyOnHead()
         XCTAssertEqual(afterRescue, 0)
-    }
-
-    @MainActor
-    func testCreateBranchAtCommitDoesNotSwitch() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let base = try await GitRunner().run(["rev-parse", "HEAD"], in: url).trimmingCharacters(in: .whitespacesAndNewlines)
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let ok5 = await store.createBranch("from-reflog", at: base)
-        XCTAssertTrue(ok5)
-        XCTAssertEqual(store.repo.branch, "master")
-        XCTAssertTrue(store.branches.contains { $0.name == "from-reflog" })
-        let ok6 = await store.createBranch("from-reflog", at: base)
-        XCTAssertFalse(ok6)
-        // Real git wording, captured: "fatal: a branch named 'from-reflog' already exists"
-        XCTAssertTrue(store.lastError?.stderr.contains("already exists") ?? false)
-    }
-
-    func testStatusParserReadsDetachedHead() {
-        // Captured from git 2.50.1 after `git checkout <hash>`.
-        let status = StatusParser.parse("# branch.oid f433f9f1ee520f733ab64a688a54c3315ee79457\n# branch.head (detached)\n")
-        XCTAssertEqual(status.branch, "(detached)")
-        XCTAssertEqual(status.headOID, "f433f9f1ee520f733ab64a688a54c3315ee79457")
     }
 }

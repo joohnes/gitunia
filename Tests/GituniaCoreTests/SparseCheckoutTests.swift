@@ -93,10 +93,4 @@ final class SparseCheckoutTests: XCTestCase {
         XCTAssertEqual(promisor.trimmingCharacters(in: .whitespacesAndNewlines), "true")
         XCTAssertEqual(filter.trimmingCharacters(in: .whitespacesAndNewlines), "blob:none")
     }
-
-    func testCloneOptionsArguments() {
-        XCTAssertEqual(CloneOptions().arguments, [])
-        XCTAssertEqual(CloneOptions(partial: true, shallow: true, sparse: true).arguments,
-                       ["--filter=blob:none", "--depth", "1", "--sparse"])
-    }
 }

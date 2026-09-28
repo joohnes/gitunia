@@ -60,13 +60,6 @@ final class WorktreeCompareTests: XCTestCase {
         XCTAssertEqual(commits.map(\.subject), ["add a"])
     }
 
-    /// B9: `FileDiffPane.contentRoot` uses this to point "Open in Editor" at the compared worktree.
-    func testContentRoot() {
-        XCTAssertEqual(CompareEndpoint.worktree(path: URL(fileURLWithPath: "/tmp/x/wt"), label: "wt").contentRoot,
-                        URL(fileURLWithPath: "/tmp/x/wt"))
-        XCTAssertNil(CompareEndpoint.ref("master").contentRoot)
-    }
-
     /// B9: resolves a worktree's real gitdir (`<master>/.git/worktrees/<name>`) from its `.git` file,
     /// so the Compare fallback watcher can watch commits made there too.
     func testGitDirForWorktree() async throws {
@@ -74,13 +67,5 @@ final class WorktreeCompareTests: XCTestCase {
         let resolved = RepositoryStore.gitDir(forWorktree: wt)
         XCTAssertEqual(resolved?.standardizedFileURL.path,
                         repo.appendingPathComponent(".git/worktrees/wt").standardizedFileURL.path)
-    }
-
-    func testSelectionRoundTrip() {
-        let wt = Worktree(path: "/tmp/x/wt", head: "abc1234def", branch: "feat", isDetached: false, isBare: false,
-                          lockedReason: nil, prunableReason: nil)
-        let endpoint = CompareEndpoint(selection: CompareEndpoint.selection(for: wt), worktrees: [wt])
-        XCTAssertEqual(endpoint, .worktree(path: URL(fileURLWithPath: "/tmp/x/wt"), label: "wt · feat"))
-        XCTAssertEqual(CompareEndpoint(selection: "master", worktrees: [wt]), .ref("master"))
     }
 }

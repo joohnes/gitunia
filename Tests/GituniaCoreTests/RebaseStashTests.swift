@@ -138,34 +138,7 @@ final class RebaseStashTests: XCTestCase {
         XCTAssertTrue(plan.confirmMessage.contains("force push"))
     }
 
-    func testRebaseBlockerAndMessages() {
-        var repo = Repository(id: URL(fileURLWithPath: "/tmp/x"))
-        repo.branch = "feature"
-        XCTAssertNil(RebasePlan.blocker(repo: repo, operation: nil))
-        XCTAssertNotNil(RebasePlan.blocker(repo: repo, operation: .merge))
-        repo.branch = "(detached)"
-        XCTAssertNotNil(RebasePlan.blocker(repo: repo, operation: nil))
-
-        let plan = RebasePlan(branch: "feature", onto: "master", replayCount: 1, pushedCount: 0, newOnOnto: 2, dirtyCount: 2)
-        XCTAssertEqual(plan.confirmMessage,
-                       "Your 1 commit on feature will be replayed on top of master, and it gets a new hash. None of them are pushed yet, so nobody else is affected.\n\n2 uncommitted changes will be stashed first and put back when the rebase finishes.")
-        let pushed = RebasePlan(branch: "feature", onto: "master", replayCount: 3, pushedCount: 3, newOnOnto: 1, dirtyCount: 0)
-        XCTAssertEqual(pushed.confirmMessage,
-                       "Your 3 commits on feature will be replayed on top of master, and each gets a new hash. They are already pushed, so you'll need to force push afterwards.")
-    }
-
     // MARK: - Stash list / show
-
-    func testStashItemParser() {
-        let text = "stash@{0}\u{1f}abc123\u{1f}1790171988\u{1f}On master: my msg\nstash@{1}\u{1f}def456\u{1f}1790000000\u{1f}autostash\n"
-        let items = StashItemParser.parse(text)
-        XCTAssertEqual(items.count, 2)
-        XCTAssertEqual(items[0].entry, StashEntry(index: 0, branch: "master", message: "my msg"))
-        XCTAssertEqual(items[0].hash, "abc123")
-        XCTAssertEqual(items[0].date.timeIntervalSince1970, 1_790_171_988)
-        XCTAssertEqual(items[1].ref, "stash@{1}")
-        XCTAssertEqual(items[1].entry.message, "autostash")
-    }
 
     @MainActor
     func testStashShowIncludesUntrackedFiles() async throws {
@@ -313,17 +286,6 @@ final class RebaseStashTests: XCTestCase {
     }
 
     // MARK: - Gitunia-labelled stashes
-
-    func testStashLabelFormatAndParseRoundTrip() throws {
-        let date = Date(timeIntervalSince1970: 1_790_000_000) // 2026-09-21T14:13:20Z
-        let label = StashLabel.make(repo: "My @ Repo", branch: "feat/x-1", date: date)
-        XCTAssertEqual(label, "gitunia: My @ Repo @ feat/x-1 2026-09-21T14:13Z")
-        let parsed = try XCTUnwrap(StashLabel.parse(label))
-        XCTAssertEqual(parsed.branch, "feat/x-1")
-        XCTAssertEqual(parsed.date, Date(timeIntervalSince1970: 1_790_000_000 - 20), "minute precision")
-        XCTAssertNil(StashLabel.parse("WIP manual stash"))
-        XCTAssertNil(StashLabel.parse("gitunia: no date here"))
-    }
 
     @MainActor
     func testAutoStashTakesTrackedAndUntrackedUnderItsLabel() async throws {

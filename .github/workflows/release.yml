@@ -44,9 +44,38 @@ jobs:
         if: steps.exists.outputs.skip != 'true'
         run: swift test
 
+      # A fixed certificate keeps the app's designated requirement the same across releases, so
+      # macOS keeps Gitunia's folder access after an update (ad-hoc re-prompts every time). Once
+      # packaging/signing-certificate.txt is committed, a missing secret fails the release instead
+      # of shipping an ad-hoc build every user's updater would refuse.
+      - name: Import signing certificate
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          if [[ -z "$SIGNING_CERT_P12" ]]; then
+            if [[ -s packaging/signing-certificate.txt ]]; then
+              echo "::error::packaging/signing-certificate.txt exists but the SIGNING_CERT_P12 secret is not set."
+              exit 1
+            fi
+            echo "::warning::No signing certificate — ad-hoc build; users are asked for folder access again after updating."
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PASS="$(uuidgen)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          echo "$SIGNING_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+
       - name: Build DMG
         if: steps.exists.outputs.skip != 'true'
-        run: UNIVERSAL=1 VERSION="${{ steps.version.outputs.version }}" scripts/make-dmg.sh
+        run: REQUIRE_SIGNING=1 UNIVERSAL=1 VERSION="${{ steps.version.outputs.version }}" scripts/make-dmg.sh
 
       # The app only installs updates whose DMG is signed with the key matching
       # packaging/update-public-key.txt. If that file is committed, a missing secret would ship

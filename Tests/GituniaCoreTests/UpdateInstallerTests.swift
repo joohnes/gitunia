@@ -5,13 +5,19 @@ import XCTest
 final class UpdateInstallerTests: XCTestCase {
     private let key = Curve25519.Signing.PrivateKey()
 
-    /// A real dmg holding a fake `Gitunia.app`, plus its base64 `.sig`, in `dir`.
-    private func makeDMG(in dir: URL, version: String = "2.0.0", bundleID: String = "dev.gitunia.app") throws -> (dmg: URL, sig: URL) {
+    /// A real dmg holding a fake `Gitunia.app`, plus its base64 `.sig`, in `dir`. `adHocSign` puts an
+    /// executable in the bundle and signs it ad-hoc, so `codesign --verify -R` has something to check.
+    private func makeDMG(in dir: URL, version: String = "2.0.0", bundleID: String = "dev.gitunia.app",
+                         adHocSign: Bool = false) throws -> (dmg: URL, sig: URL) {
         let src = dir.appendingPathComponent("src"), contents = src.appendingPathComponent("Gitunia.app/Contents")
         try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
-        let plist: [String: Any] = ["CFBundleIdentifier": bundleID, "CFBundleShortVersionString": version]
+        var plist: [String: Any] = ["CFBundleIdentifier": bundleID, "CFBundleShortVersionString": version]
+        if adHocSign { plist["CFBundleExecutable"] = "Gitunia" }
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
             .write(to: contents.appendingPathComponent("Info.plist"))
+        if adHocSign {
+            try Self.adHocSignedBundle(at: src.appendingPathComponent("Gitunia.app"))
+        }
         let dmg = dir.appendingPathComponent("Gitunia-\(version).dmg")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
@@ -30,10 +36,11 @@ final class UpdateInstallerTests: XCTestCase {
     }
 
     /// Serves local files by the request's `.sig`-ness, copying so `prepare` can move them.
-    private func installer(dir: URL, dmg: URL, sig: URL, publicKey: Data?) -> UpdateInstaller {
+    /// `pinned` stands in for the running app's designated requirement (nil = nothing pinned).
+    private func installer(dir: URL, dmg: URL, sig: URL, publicKey: Data?, pinned: String? = nil) -> UpdateInstaller {
         let staging = dir.appendingPathComponent("downloads")
         return UpdateInstaller(publicKey: publicKey, appURL: dir.appendingPathComponent("Applications/Gitunia.app"),
-                               workDir: dir.appendingPathComponent("work")) { url in
+                               workDir: dir.appendingPathComponent("work"), pinnedRequirement: { _ in pinned }) { url in
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
             let out = staging.appendingPathComponent(UUID().uuidString)
             try FileManager.default.copyItem(at: url.pathExtension == "sig" ? sig : dmg, to: out)
@@ -115,6 +122,95 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertNil(UpdateInstaller.bundledPublicKey(nil))
         XCTAssertNil(UpdateInstaller.bundledPublicKey(["GituniaUpdatePublicKey": ""]))
         XCTAssertEqual(UpdateInstaller.bundledPublicKey(["GituniaUpdatePublicKey": "AAEC"]), Data([0, 1, 2]))
+    }
+
+    /// Copies `/usr/bin/true` in as the executable and re-signs the bundle ad-hoc.
+    static func adHocSignedBundle(at app: URL) throws {
+        let macOS = app.appendingPathComponent("Contents/MacOS")
+        try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(atPath: "/usr/bin/true", toPath: macOS.appendingPathComponent("Gitunia").path)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        p.arguments = ["--force", "--sign", "-", app.path]
+        p.standardError = FileHandle.nullDevice
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0, "codesign ad-hoc")
+    }
+
+    private let certRequirement = #"identifier "dev.gitunia.app" and certificate leaf = H"bdd972e5194cb10a9b6851d0619b9c04c1635ab0""#
+
+    func testPinnedRequirementFromCertificateSignedApp() {
+        let out = "Executable=/Applications/Gitunia.app/Contents/MacOS/Gitunia\ndesignated => \(certRequirement)\n"
+        XCTAssertEqual(UpdateInstaller.pinnedRequirement(codesignDisplay: out), certRequirement)
+    }
+
+    /// Review focus 1: today's ad-hoc builds must accept the first certificate-signed update.
+    func testAdHocRunningAppPinsNothing() {
+        XCTAssertNil(UpdateInstaller.pinnedRequirement(codesignDisplay: "# designated => cdhash H\"328a39f4c3dd3636ed90a17931c69166ccb7cdf6\"\n"))
+        XCTAssertNil(UpdateInstaller.pinnedRequirement(codesignDisplay: "designated => cdhash H\"328a39f4c3dd3636ed90a17931c69166ccb7cdf6\"\n"))
+    }
+
+    /// Review focus 2: an unreadable or unsigned running app must not block updates.
+    func testUnsignedOrUnreadablePinsNothing() async throws {
+        XCTAssertNil(UpdateInstaller.pinnedRequirement(codesignDisplay: ""))
+        XCTAssertNil(UpdateInstaller.pinnedRequirement(codesignDisplay: "Gitunia.app: code object is not signed at all\n"))
+        let missing = try TestHelpers.makeTempDir().appendingPathComponent("Nope.app")
+        let pinned = await UpdateInstaller.runningAppRequirement(missing)
+        XCTAssertNil(pinned)
+    }
+
+    func testSatisfiesChecksTheRealSignature() async throws {
+        let app = try TestHelpers.makeTempDir().appendingPathComponent("Gitunia.app")
+        try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        let plist: [String: Any] = ["CFBundleIdentifier": "dev.gitunia.app", "CFBundleExecutable": "Gitunia"]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: app.appendingPathComponent("Contents/Info.plist"))
+        try Self.adHocSignedBundle(at: app)
+        let sameIdentifier = await UpdateInstaller.satisfies(app, requirement: #"identifier "dev.gitunia.app""#)
+        let otherCertificate = await UpdateInstaller.satisfies(app, requirement: certRequirement)
+        XCTAssertTrue(sameIdentifier)
+        XCTAssertFalse(otherCertificate)
+    }
+
+    /// Review focus 5: the way through to a paid Developer ID certificate later. Positive case on an
+    /// installed Developer ID app when the machine has one; an ad-hoc bundle must never pass.
+    func testDeveloperIDRequirement() async throws {
+        XCTAssertEqual(UpdateInstaller.developerIDRequirement(identifier: "dev.gitunia.app"),
+                       #"identifier "dev.gitunia.app" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"#)
+        let app = try TestHelpers.makeTempDir().appendingPathComponent("Gitunia.app")
+        try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+        let plist: [String: Any] = ["CFBundleIdentifier": "dev.gitunia.app", "CFBundleExecutable": "Gitunia"]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+            .write(to: app.appendingPathComponent("Contents/Info.plist"))
+        try Self.adHocSignedBundle(at: app)
+        let adHocPasses = await UpdateInstaller.satisfies(app, requirement: UpdateInstaller.developerIDRequirement(identifier: "dev.gitunia.app"))
+        XCTAssertFalse(adHocPasses)
+
+        let apps = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: "/Applications"), includingPropertiesForKeys: nil)) ?? []
+        for candidate in apps where candidate.pathExtension == "app" {
+            guard let id = Bundle(url: candidate)?.bundleIdentifier,
+                  await UpdateInstaller.satisfies(candidate, requirement: UpdateInstaller.developerIDRequirement(identifier: id)) else { continue }
+            return // found a real Developer ID app that meets the requirement
+        }
+        throw XCTSkip("no Developer ID-signed app in /Applications to check the positive case")
+    }
+
+    func testPrepareRefusesUpdateFromDifferentSigner() async throws {
+        let dir = try TestHelpers.makeTempDir()
+        let (dmg, sig) = try makeDMG(in: dir, adHocSign: true)
+        let inst = installer(dir: dir, dmg: dmg, sig: sig, publicKey: key.publicKey.rawRepresentation,
+                             pinned: certRequirement)
+        await assertThrows(UpdateInstallError.differentSigner) { _ = try await inst.prepare(self.release()) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("work").path), "discarded")
+    }
+
+    func testPrepareAcceptsUpdateMeetingThePin() async throws {
+        let dir = try TestHelpers.makeTempDir()
+        let (dmg, sig) = try makeDMG(in: dir, adHocSign: true)
+        let inst = installer(dir: dir, dmg: dmg, sig: sig, publicKey: key.publicKey.rawRepresentation,
+                             pinned: #"identifier "dev.gitunia.app""#)
+        let prepared = try await inst.prepare(release())
+        XCTAssertEqual(prepared.version, "2.0.0")
     }
 
     private func assertThrows(_ expected: UpdateInstallError, _ body: () async throws -> Void,

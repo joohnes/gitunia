@@ -4,24 +4,20 @@ import XCTest
 final class RepoEventsTests: XCTestCase {
     private let base = RepoEvent.Snapshot(headOID: "aaa", branches: ["main"], operation: nil)
 
-    func testNoChangeIsEmpty() {
-        XCTAssertEqual(RepoEvent.diff(old: base, new: base), [])
-    }
-
-    func testHeadMoved() {
-        var new = base; new.headOID = "bbb"
-        XCTAssertEqual(RepoEvent.diff(old: base, new: new), [.headMoved(from: "aaa", to: "bbb")])
-    }
-
-    func testBranchAddedButNotRemoved() {
-        var new = base; new.branches = ["feat", "zeta"]
-        XCTAssertEqual(RepoEvent.diff(old: base, new: new), [.branchAdded("feat"), .branchAdded("zeta")])
-    }
-
-    func testOperationStartedOnlyOnTransition() {
-        var new = base; new.operation = .rebase
-        XCTAssertEqual(RepoEvent.diff(old: base, new: new), [.operationStarted(.rebase)])
-        XCTAssertEqual(RepoEvent.diff(old: new, new: new), [])
+    func testDiffTable() {
+        var moved = base; moved.headOID = "bbb"
+        var branched = base; branched.branches = ["feat", "zeta"]
+        var rebasing = base; rebasing.operation = .rebase
+        let cases: [(name: String, old: RepoEvent.Snapshot, new: RepoEvent.Snapshot, expected: [RepoEvent])] = [
+            ("no change", base, base, []),
+            ("head moved", base, moved, [.headMoved(from: "aaa", to: "bbb")]),
+            ("branch added, not removed", base, branched, [.branchAdded("feat"), .branchAdded("zeta")]),
+            ("operation started", base, rebasing, [.operationStarted(.rebase)]),
+            ("operation still running", rebasing, rebasing, []),
+        ]
+        for c in cases {
+            XCTAssertEqual(RepoEvent.diff(old: c.old, new: c.new), c.expected, c.name)
+        }
     }
 
     func testCoalescerFixedWindowPerKey() {

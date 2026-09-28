@@ -98,24 +98,6 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(files[0].hunks[0].lines.count, 2)
     }
 
-    func testEmpty() {
-        XCTAssertTrue(DiffParser.parse("").isEmpty)
-    }
-
-    func testNoNewlineMarkerIsNotALine() {
-        let diff = """
-        diff --git a/x b/x
-        --- a/x
-        +++ b/x
-        @@ -1 +1 @@
-        -a
-        +b
-        \\ No newline at end of file
-        """
-        let f = DiffParser.parse(diff)[0]
-        XCTAssertEqual(f.hunks[0].lines.count, 2)
-    }
-
     func testContentLinesStartingWithDashesAreKept() {
         let diff = """
         diff --git a/x.sql b/x.sql

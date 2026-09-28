@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/Gitunia.app from the Swift package (release), with icon and Info.plist, ad-hoc signed.
+# Builds dist/Gitunia.app from the Swift package (release), with icon and Info.plist, signed by scripts/sign-app.sh.
 # UNIVERSAL=1 builds one binary for both Apple silicon and Intel (what the release workflow ships).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -50,5 +50,5 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
+scripts/sign-app.sh "$APP"
 echo "Built $APP (version $VERSION)"

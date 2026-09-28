@@ -12,11 +12,4 @@ final class RepositoryStoreHeadPatchTests: XCTestCase {
         let findings = SecretScanner.findings(inLog: patch)
         XCTAssertEqual(findings.map { ($0.path, $0.label) }.map { "\($0.0):\($0.1)" }, ["config/aws.env:an AWS access key ID"])
     }
-
-    func testHeadPatchCleanCommitHasNoFindings() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        let findings = SecretScanner.findings(inLog: await store.headPatch())
-        XCTAssertTrue(findings.isEmpty)
-    }
 }

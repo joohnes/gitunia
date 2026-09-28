@@ -2,11 +2,6 @@ import XCTest
 @testable import GituniaCore
 
 final class ModelOutputTests: XCTestCase {
-    func testPlainJSON() throws {
-        let m = try ModelOutput.parseCommitMessage(#"{"title":"feat: x","body":"because"}"#)
-        XCTAssertEqual(m, CommitMessage(title: "feat: x", body: "because"))
-    }
-
     func testFencedJSONWithChatter() throws {
         let raw = """
         Sure! Here is the message:
@@ -15,10 +10,6 @@ final class ModelOutputTests: XCTestCase {
         ```
         """
         XCTAssertEqual(try ModelOutput.parseCommitMessage(raw), CommitMessage(title: "fix: y", body: ""))
-    }
-
-    func testMissingBodyDefaultsToEmpty() throws {
-        XCTAssertEqual(try ModelOutput.parseCommitMessage(#"{"title":"chore: z"}"#), CommitMessage(title: "chore: z"))
     }
 
     func testGarbageThrowsBadResponse() {

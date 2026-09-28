@@ -44,8 +44,9 @@ final class BisectTests: XCTestCase {
         XCTAssertFalse(BisectLog.parse(log: "").isActive)
     }
 
+    /// Six commits c1…c6 on top of the temp repo's init commit; c4 onward contain "BUG".
     @MainActor
-    func testBisectFindsFirstBadCommit() async throws {
+    private func makeSixCommitRepo() async throws -> (url: URL, store: RepositoryStore, hashes: [String]) {
         let url = try await TestHelpers.makeTempRepo()
         let git = GitRunner()
         var hashes: [String] = []
@@ -57,6 +58,12 @@ final class BisectTests: XCTestCase {
         }
         let store = RepositoryStore(url: url)
         await store.refreshStatus()
+        return (url, store, hashes)
+    }
+
+    @MainActor
+    func testBisectFindsFirstBadCommit() async throws {
+        let (url, store, hashes) = try await makeSixCommitRepo()
         XCTAssertNil(store.operation)
 
         let startError = await store.bisectStart(bad: "HEAD", good: hashes[0])
@@ -88,17 +95,7 @@ final class BisectTests: XCTestCase {
     /// test — `bisectMark(_:hash:)` must accept an explicit, non-current hash and still advance.
     @MainActor
     func testMarkingNonTestedCommitAdvancesBisect() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        var hashes: [String] = []
-        for i in 1...6 {
-            try TestHelpers.write(i >= 4 ? "BUG \(i)\n" : "ok \(i)\n", to: url, "f.txt")
-            _ = try await git.run(["add", "."], in: url)
-            _ = try await git.run(["commit", "-q", "-m", "c\(i)"], in: url)
-            hashes.append(try await git.run(["rev-parse", "HEAD"], in: url).trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
+        let (_, store, hashes) = try await makeSixCommitRepo()
         let startError = await store.bisectStart(bad: "HEAD", good: hashes[0])
         XCTAssertNil(startError)
         let firstTested = try XCTUnwrap(store.bisect?.current)
@@ -111,39 +108,6 @@ final class BisectTests: XCTestCase {
         // Bisect moved on to test something new, rather than sitting stuck on `firstTested`.
         XCTAssertNotEqual(store.bisect?.current, firstTested)
         XCTAssertNotNil(store.bisect?.current)
-    }
-
-    /// B7(a): `HistoryView` defaults to `branch: bisect.bad.first` while bisecting instead of `nil`
-    /// (→ `HEAD`, detached at whatever commit is under test) — otherwise commits newer than the
-    /// tested one vanish from the list. Verified here directly against `history(branch:)`.
-    @MainActor
-    func testHistoryFromBadRefDuringBisectIncludesCommitsNewerThanHead() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        var hashes: [String] = []
-        for i in 1...6 {
-            try TestHelpers.write(i >= 4 ? "BUG \(i)\n" : "ok \(i)\n", to: url, "f.txt")
-            _ = try await git.run(["add", "."], in: url)
-            _ = try await git.run(["commit", "-q", "-m", "c\(i)"], in: url)
-            hashes.append(try await git.run(["rev-parse", "HEAD"], in: url).trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        // "bad" is the tip (c6); bisect checks out a commit strictly between good and bad.
-        let startError = await store.bisectStart(bad: "HEAD", good: hashes[0])
-        XCTAssertNil(startError)
-        let bad = try XCTUnwrap(store.bisect?.bad.first)
-        XCTAssertEqual(bad, hashes[5])
-
-        // Plain `HEAD` (detached at the midpoint under test) can't see c6 — it's not an ancestor.
-        let fromHead = await store.history(branch: nil)
-        XCTAssertFalse(fromHead.map(\.hash).contains(hashes[5]))
-        // The original "bad" ref sees the whole range, including commits newer than the tested one
-        // — c1..c6 plus `makeTempRepo`'s own initial "init" commit at the root.
-        let fromBad = await store.history(branch: bad)
-        XCTAssertTrue(fromBad.map(\.hash).contains(hashes[5]))
-        XCTAssertEqual(Array(fromBad.map(\.hash).prefix(hashes.count)), Array(hashes.reversed()))
-        XCTAssertEqual(fromBad.count, hashes.count + 1)
     }
 
     @MainActor

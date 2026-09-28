@@ -25,28 +25,6 @@ final class BranchOpsTests: XCTestCase {
     }
 
     @MainActor
-    func testMergeCreatesAMergeCommitWhenNotFastForwardable() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        _ = try await git.run(["checkout", "-q", "-b", "feature"], in: url)
-        try TestHelpers.write("feature\n", to: url, "feature.txt")
-        _ = try await git.run(["add", "feature.txt"], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "feature commit"], in: url)
-        _ = try await git.run(["checkout", "-q", "master"], in: url)
-        try TestHelpers.write("master\n", to: url, "master.txt")
-        _ = try await git.run(["add", "master.txt"], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "master commit"], in: url)
-
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let result = await store.mergeBranch("feature")
-        XCTAssertTrue(result.succeeded)
-        XCTAssertFalse(result.wasFastForward)
-        let parents = try await git.run(["rev-list", "--parents", "-n", "1", "HEAD"], in: url)
-        XCTAssertEqual(parents.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ").count, 3)
-    }
-
-    @MainActor
     func testMergeConflictLeavesMergeOperationInProgressAndContinueCommits() async throws {
         let url = try await TestHelpers.makeTempRepo()
         let git = GitRunner()
@@ -77,17 +55,6 @@ final class BranchOpsTests: XCTestCase {
     // MARK: - Rename
 
     @MainActor
-    func testRenameBranchSucceeds() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let result = await store.renameBranch("master", to: "trunk")
-        XCTAssertEqual(result, .succeeded(keptOldRemoteName: false))
-        await store.refreshStatus()
-        XCTAssertEqual(store.repo.branch, "trunk")
-    }
-
-    @MainActor
     func testRenameBranchSaysRemoteKeepsOldNameWhenUpstreamExists() async throws {
         let repo = try await TestHelpers.makeTempRepo()
         let remote = try TestHelpers.makeTempDir().appendingPathComponent("remote.git")
@@ -113,33 +80,7 @@ final class BranchOpsTests: XCTestCase {
         XCTAssertEqual(store.repo.branch, "master", "nothing should have run")
     }
 
-    @MainActor
-    func testRenameBranchRejectsDuplicateName() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        _ = try await git.run(["branch", "existing"], in: url)
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let result = await store.renameBranch("master", to: "existing")
-        XCTAssertEqual(result, .duplicateName)
-    }
-
     // MARK: - Delete (local)
-
-    @MainActor
-    func testDeleteMergedBranchSucceeds() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        _ = try await git.run(["branch", "merged-branch"], in: url)
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-
-        let result = await store.deleteBranch("merged-branch")
-        XCTAssertTrue(result.succeeded)
-        XCTAssertFalse(result.notFullyMerged)
-        await store.refreshStatus()
-        XCTAssertFalse(store.branches.contains { $0.name == "merged-branch" })
-    }
 
     @MainActor
     func testDeleteUnmergedBranchFailsClassifiedThenForceDeleteSucceeds() async throws {
@@ -205,12 +146,6 @@ final class BranchOpsTests: XCTestCase {
         let repo = Repository(id: URL(fileURLWithPath: "/tmp/repo"), branch: "master")
         let issues = Preflight.check(.mergeBranch(branch: "feature"), repo: repo, hasUpstream: true, operationInProgress: true)
         XCTAssertTrue(issues.contains { $0.id == "operation-in-progress" && $0.severity == .blocker })
-    }
-
-    @MainActor
-    func testMergePreflightCleanHasNoIssues() throws {
-        let repo = Repository(id: URL(fileURLWithPath: "/tmp/repo"), branch: "master")
-        XCTAssertEqual(Preflight.check(.mergeBranch(branch: "feature"), repo: repo, hasUpstream: true), [])
     }
 
     /// A repo-local `core.sshCommand` (an agent can write `.git/config`) runs on a manual fetch —

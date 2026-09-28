@@ -45,26 +45,20 @@ final class WorkspaceFileStoreTests: XCTestCase {
         store.stopWatching()
     }
 
-    func testInitRepositoryInsideLinkedFolderIsNotAddedAsSingleRepo() async throws {
+    func testInitRepositoryIsAddedAsSingleRepoOnlyOutsideLinkedFolders() async throws {
         let store = try makeStore()
         await store.openUntitled()
         let folder = try TestHelpers.makeTempDir()
         await store.addFolder(folder)
-        let url = try await store.initRepository(named: "fresh", in: folder)
-        XCTAssertEqual(store.file.repositories, [], "the linked folder already covers it")
-        let fresh = try XCTUnwrap(store.repository(atPath: url.path))
-        XCTAssertEqual(store.selectedRepoID, fresh.id)
-        store.stopWatching()
-    }
 
-    func testInitRepositoryOutsideLinkedFoldersIsAddedAsSingleRepo() async throws {
-        let store = try makeStore()
-        await store.openUntitled()
-        await store.addFolder(try TestHelpers.makeTempDir())
-        let elsewhere = try TestHelpers.makeTempDir()
-        let url = try await store.initRepository(named: "loose", in: elsewhere)
+        let freshURL = try await store.initRepository(named: "fresh", in: folder)
+        XCTAssertEqual(store.file.repositories, [], "the linked folder already covers it")
+        let fresh = try XCTUnwrap(store.repository(atPath: freshURL.path))
+        XCTAssertEqual(store.selectedRepoID, fresh.id)
+
+        let looseURL = try await store.initRepository(named: "loose", in: try TestHelpers.makeTempDir())
         XCTAssertEqual(store.file.repositories.count, 1)
-        let loose = try XCTUnwrap(store.repository(atPath: url.path))
+        let loose = try XCTUnwrap(store.repository(atPath: looseURL.path))
         XCTAssertEqual(store.selectedRepoID, loose.id)
         store.stopWatching()
     }

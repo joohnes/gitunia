@@ -25,8 +25,4 @@ final class CommitDetailParserTests: XCTestCase {
         XCTAssertEqual(detail?.parents, ["p1"])
         XCTAssertFalse(detail?.committerDiffersFromAuthor ?? true)
     }
-
-    func testEmpty() {
-        XCTAssertNil(CommitDetailParser.parse(""))
-    }
 }

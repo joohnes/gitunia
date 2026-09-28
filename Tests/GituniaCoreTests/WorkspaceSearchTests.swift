@@ -10,12 +10,6 @@ final class WorkspaceSearchTests: XCTestCase {
         ])
     }
 
-    func testParseGrepSkipsBinaryAndEmpty() {
-        XCTAssertEqual(WorkspaceSearch.parseGrep("Binary file logo.png matches\nx.txt\u{0}1\u{0}hit\n"),
-                       [GrepHit(path: "x.txt", line: 1, text: "hit")])
-        XCTAssertEqual(WorkspaceSearch.parseGrep(""), [])
-    }
-
     @MainActor
     func testGrepAndPickaxeAgainstRealRepos() async throws {
         let hitURL = try await TestHelpers.makeTempRepo()

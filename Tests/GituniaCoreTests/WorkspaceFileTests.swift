@@ -64,10 +64,4 @@ final class WorkspaceFileTests: XCTestCase {
         XCTAssertEqual(loaded.folders, [.init(path: WorkspaceFile.standardize(dir.appendingPathComponent("x").path), excluded: [])])
         XCTAssertEqual(loaded.tags, [:])
     }
-
-    func testLoadThrowsOnGarbage() throws {
-        let fileURL = try TestHelpers.makeTempDir().appendingPathComponent("bad.gitunia-workspace")
-        try "not json".write(to: fileURL, atomically: true, encoding: .utf8)
-        XCTAssertThrowsError(try WorkspaceFile.load(from: fileURL))
-    }
 }

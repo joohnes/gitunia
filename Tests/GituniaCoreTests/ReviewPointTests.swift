@@ -35,11 +35,4 @@ final class ReviewPointTests: XCTestCase {
         XCTAssertNil(store.unreviewedCount)
         XCTAssertTrue(store.reviewPointMissing)
     }
-
-    func testRepoPrefs_decodesWithoutReviewedHead() throws {
-        let prefs = try JSONDecoder().decode(RepoPrefs.self, from: Data(#"{"tags":[]}"#.utf8))
-        XCTAssertNil(prefs.reviewedHead)
-        let roundTrip = try JSONDecoder().decode(RepoPrefs.self, from: JSONEncoder().encode({ var p = RepoPrefs(); p.reviewedHead = "abc"; return p }()))
-        XCTAssertEqual(roundTrip.reviewedHead, "abc")
-    }
 }

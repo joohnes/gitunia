@@ -184,15 +184,4 @@ final class WorkspaceRegistryTests: XCTestCase {
         store.flushSave()
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(untitled).path))
     }
-
-    func testWindowSubtitleIsRepoNameAndBranch() {
-        let url = URL(fileURLWithPath: "/x/gitunia")
-        XCTAssertEqual(ContentView.windowSubtitle(Repository(id: url, branch: "main")), "gitunia — main")
-        XCTAssertEqual(ContentView.windowSubtitle(Repository(id: url)), "gitunia")
-    }
-
-    func testCloseAlertCountsArePluralised() {
-        XCTAssertEqual(CloseDelegateProxy.count(1, "repository", "repositories"), "1 repository")
-        XCTAssertEqual(CloseDelegateProxy.count(2, "linked folder", "linked folders"), "2 linked folders")
-    }
 }

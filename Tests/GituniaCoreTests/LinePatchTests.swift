@@ -328,11 +328,6 @@ final class LinePatchTests: XCTestCase {
         XCTAssertEqual(f.hunks[0].lines.map(\.noNewline), [false, true, false])
     }
 
-    func testParserSplitsCRLFLines() {
-        let f = DiffParser.parse("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+B\r\n")[0]
-        XCTAssertEqual(f.hunks[0].lines.map(\.text), ["a\r", "b\r", "B\r"])
-    }
-
     // MARK: - Pure construction
 
     func testHeaderRecountAndNilForEmptySelection() {

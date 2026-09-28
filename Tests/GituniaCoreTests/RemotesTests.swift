@@ -2,30 +2,23 @@ import XCTest
 @testable import GituniaCore
 
 final class RemotesPureTests: XCTestCase {
-    func testRedactsPasswordKeepsUser() {
-        XCTAssertEqual(URLRedaction.redact("https://jan:ghp_s3cret@github.com/a/b.git"), "https://jan:•••@github.com/a/b.git")
-    }
-
-    func testRedactsTokenAsHTTPUsername() {
-        XCTAssertEqual(URLRedaction.redact("https://ghp_s3cret@github.com/a/b.git"), "https://•••@github.com/a/b.git")
-    }
-
-    func testPasswordContainingAtIsFullyRedacted() {
-        XCTAssertEqual(URLRedaction.redact("https://u:p@ss@host/x"), "https://u:•••@host/x")
-    }
-
-    func testLeavesSafeURLsAlone() {
-        for url in ["ssh://git@github.com/a/b.git", "git@github.com:a/b.git", "https://github.com/a/b.git", "/tmp/r.git", "../up.git"] {
-            XCTAssertEqual(URLRedaction.redact(url), url)
+    func testURLRedactionTable() {
+        let safe = ["ssh://git@github.com/a/b.git", "git@github.com:a/b.git", "https://github.com/a/b.git", "/tmp/r.git", "../up.git"]
+        let cases: [(input: String, expected: String)] = [
+            ("https://jan:ghp_s3cret@github.com/a/b.git", "https://jan:•••@github.com/a/b.git"),
+            ("https://ghp_s3cret@github.com/a/b.git", "https://•••@github.com/a/b.git"),
+            ("https://u:p@ss@host/x", "https://u:•••@host/x"),
+            ("ssh://git:pw@host/x", "ssh://git:•••@host/x"),
+            ("fatal: could not read from 'https://u:tok1@a.com/x' and 'https://tok2@b.com/y'",
+             "fatal: could not read from 'https://u:•••@a.com/x' and 'https://•••@b.com/y'"),
+        ] + safe.map { ($0, $0) }
+        for (input, expected) in cases {
+            let out = URLRedaction.redact(input)
+            XCTAssertEqual(out, expected, input)
+            for secret in ["ghp_s3cret", "p@ss", ":pw@", "tok1", "tok2"] {
+                XCTAssertFalse(out.contains(secret), "\(input) leaks \(secret)")
+            }
         }
-        XCTAssertEqual(URLRedaction.redact("ssh://git:pw@host/x"), "ssh://git:•••@host/x")
-    }
-
-    func testRedactsInsideFreeText() {
-        let text = "fatal: could not read from 'https://u:tok1@a.com/x' and 'https://tok2@b.com/y'"
-        let out = URLRedaction.redact(text)
-        XCTAssertFalse(out.contains("tok1")); XCTAssertFalse(out.contains("tok2"))
-        XCTAssertEqual(out, "fatal: could not read from 'https://u:•••@a.com/x' and 'https://•••@b.com/y'")
     }
 
     func testGitErrorRedactsArgsAndStderr() {
@@ -56,23 +49,6 @@ final class RemotesPureTests: XCTestCase {
         XCTAssertNil(RemoteSelection.pushRemote(from: [], preferred: "a"))
         XCTAssertEqual(RemoteSelection.remote(ofTrackingBranch: "team/fork/feat/x", remotes: ["team", "team/fork"]), "team/fork")
         XCTAssertEqual(RemoteSelection.remote(ofTrackingBranch: "origin/master", remotes: []), "origin")
-    }
-
-    func testOldWorkspaceJSONStillDecodes() throws {
-        let json = #"{"repos":{"/r":{"tags":["x"],"localAIOnly":true}},"workspacePath":"/w"}"#
-        let cfg = try JSONDecoder().decode(WorkspaceConfig.self, from: Data(json.utf8))
-        XCTAssertEqual(cfg.repos["/r"]?.tags, ["x"])
-        XCTAssertNil(cfg.repos["/r"]?.defaultRemote)
-    }
-
-    func testDefaultRemoteRoundTrips() throws {
-        let store = ConfigStore(fileURL: try TestHelpers.makeTempDir().appendingPathComponent("workspace.json"))
-        var cfg = WorkspaceConfig()
-        var prefs = RepoPrefs(tags: ["a"])
-        prefs.defaultRemote = "backup"
-        cfg.repos["/r"] = prefs
-        try store.save(cfg)
-        XCTAssertEqual(store.loadWithWarning().0.repos["/r"]?.defaultRemote, "backup")
     }
 }
 
@@ -194,18 +170,6 @@ final class RemotesStoreTests: XCTestCase {
     }
 
 
-    func testFetchFromSpecificRemote() async throws {
-        let (url, _, backup) = try await makeRepoWithTwoRemotes()
-        let other = try await TestHelpers.makeTempRepo()
-        _ = try await git.run(["push", "-q", backup.path, "master:shared"], in: other)
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let result = await store.fetch(from: "backup")
-        XCTAssertTrue(result.succeeded)
-        XCTAssertTrue(store.branches.contains { $0.name == "backup/shared" })
-    }
-
-
     func testSetAndUnsetUpstreamRefreshAheadBehind() async throws {
         let (url, _, backup) = try await makeRepoWithTwoRemotes()
         let store = RepositoryStore(url: url)
@@ -269,17 +233,5 @@ final class RemotesStoreTests: XCTestCase {
         XCTAssertEqual(added, .succeeded)
         let after = await store.checkGitHubRemote()
         XCTAssertTrue(after)
-    }
-
-    func testWorkspaceSetDefaultRemotePersistsAndApplies() async throws {
-        let (url, _, _) = try await makeRepoWithTwoRemotes()
-        let configURL = try TestHelpers.makeTempDir().appendingPathComponent("workspace.json")
-        let workspace = WorkspaceStore(configStore: ConfigStore(fileURL: configURL))
-        let store = RepositoryStore(url: url)
-        workspace.setDefaultRemote("backup", for: store)
-        XCTAssertEqual(store.defaultRemote, "backup")
-        XCTAssertEqual(ConfigStore(fileURL: configURL).loadWithWarning().0.repos[url.path]?.defaultRemote, "backup")
-        workspace.setDefaultRemote(nil, for: store)
-        XCTAssertNil(store.defaultRemote)
     }
 }

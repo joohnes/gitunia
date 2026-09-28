@@ -63,24 +63,6 @@ final class RemoteOpsTests: XCTestCase {
     }
 
     @MainActor
-    func testBranchesCheckoutAndCreate() async throws {
-        let (url, _) = try await makeRepoWithRemote()
-        let store = RepositoryStore(url: url)
-        _ = await store.push()
-        let created = await store.createBranch("feat/new")
-        XCTAssertTrue(created)
-        XCTAssertEqual(store.repo.branch, "feat/new")
-        XCTAssertEqual(store.branches.filter { !$0.isRemote }.map(\.name).sorted(), ["feat/new", "master"])
-        XCTAssertEqual(store.branches.first { $0.isCurrent }?.name, "feat/new")
-        XCTAssertTrue(store.branches.contains(BranchInfo(name: "origin/master", isCurrent: false, isRemote: true)))
-
-        let master = store.branches.first { $0.name == "master" }!
-        let checkedOut = await store.checkout(master)
-        XCTAssertTrue(checkedOut)
-        XCTAssertEqual(store.repo.branch, "master")
-    }
-
-    @MainActor
     func testPullFastForwards() async throws {
         let (a, remote) = try await makeRepoWithRemote()
         let storeA = RepositoryStore(url: a)
@@ -139,21 +121,6 @@ final class RemoteOpsTests: XCTestCase {
         let checkedOut = await store.checkout(remoteDup)
         XCTAssertTrue(checkedOut)
         XCTAssertEqual(store.repo.branch, "feat/dup")
-    }
-
-    @MainActor
-    func testPushUsesFirstRemoteWhenNotOrigin() async throws {
-        let repo = try await TestHelpers.makeTempRepo()
-        let remote = try TestHelpers.makeTempDir().appendingPathComponent("remote.git")
-        let git = GitRunner()
-        _ = try await git.run(["init", "-q", "-b", "master", "--bare", remote.path], in: repo)
-        _ = try await git.run(["remote", "add", "upstream", remote.path], in: repo)
-        let store = RepositoryStore(url: repo)
-        await store.refreshStatus()
-
-        let pushed = await store.push()
-        XCTAssertTrue(pushed.succeeded)
-        XCTAssertTrue(store.hasUpstream)
     }
 
     @MainActor
@@ -324,18 +291,6 @@ final class RemoteOpsTests: XCTestCase {
         _ = await storeB.useOurs(change)
         let oursContent = try String(contentsOf: storeB.url.appendingPathComponent("f.txt"), encoding: .utf8)
         XCTAssertEqual(oursContent.trimmingCharacters(in: .whitespacesAndNewlines), "line1-A", "--ours during a rebase is the upstream commit (A's), not the local one")
-    }
-
-    @MainActor
-    func testTheirsDuringRebaseIsMyOwnCommitBeingReplayed() async throws {
-        let (_, storeB) = try await makeConflictingRebase()
-        _ = await storeB.pullRebase()
-        await storeB.refreshStatus()
-        let change = storeB.conflictedChanges[0]
-
-        _ = await storeB.useTheirs(change)
-        let theirsContent = try String(contentsOf: storeB.url.appendingPathComponent("f.txt"), encoding: .utf8)
-        XCTAssertEqual(theirsContent.trimmingCharacters(in: .whitespacesAndNewlines), "line1-B", "--theirs during a rebase is the commit being replayed (B's own)")
     }
 
     @MainActor

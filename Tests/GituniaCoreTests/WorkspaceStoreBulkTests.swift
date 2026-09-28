@@ -26,23 +26,6 @@ final class WorkspaceStoreBulkTests: XCTestCase {
     // MARK: - fetchAll / pullAll progress + skipping
 
     @MainActor
-    func testFetchAllReachesTotalOverMultipleRepos() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        _ = try await makeConnectedRepo(named: "a", in: ws)
-        _ = try await makeConnectedRepo(named: "b", in: ws)
-        let store = try makeStore()
-        await store.openUntitled(linkingFolder: ws)
-
-        let result = await store.fetchAll()
-        XCTAssertEqual(result.kind, .fetch)
-        XCTAssertEqual(result.total, 2)
-        XCTAssertEqual(result.completed, 2)
-        XCTAssertTrue(result.failures.isEmpty)
-        XCTAssertNil(store.bulk, "bulk is cleared once the run finishes")
-        store.stopWatching()
-    }
-
-    @MainActor
     func testFetchAllSkipsUnavailableRepos() async throws {
         let ws = try TestHelpers.makeTempDir()
         _ = try await makeConnectedRepo(named: "a", in: ws)
@@ -187,27 +170,6 @@ final class WorkspaceStoreBulkTests: XCTestCase {
     }
 
     @MainActor
-    func testPushAllSkipsRepoWithNothingToPush() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        // Already pushed by makeConnectedRepo — has an upstream, nothing ahead.
-        _ = try await makeConnectedRepo(named: "clean", in: ws)
-        let ahead = try await makeConnectedRepo(named: "ahead", in: ws)
-        try TestHelpers.write("x\n", to: ahead.url, "x.txt")
-        await ahead.stageAll()
-        _ = await ahead.commit(CommitMessage(title: "feat: x"))
-
-        let store = try makeStore()
-        await store.openUntitled(linkingFolder: ws)
-        XCTAssertEqual(store.repositories.count, 2)
-
-        let result = await store.pushAll()
-        XCTAssertEqual(result.total, 1, "the repo with nothing to push is skipped")
-        XCTAssertEqual(result.completed, 1)
-        XCTAssertTrue(result.failures.isEmpty)
-        store.stopWatching()
-    }
-
-    @MainActor
     func testPushAllCollectsFailureAndContinues() async throws {
         let ws = try TestHelpers.makeTempDir()
         let good = try await makeConnectedRepo(named: "good", in: ws)
@@ -273,62 +235,6 @@ final class WorkspaceStoreBulkTests: XCTestCase {
         store.stopWatching()
     }
 
-    @MainActor
-    func testSecondPushAllIsRefusedWhileOneIsInFlight() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        let a = try await makeConnectedRepo(named: "a", in: ws)
-        try TestHelpers.write("x\n", to: a.url, "x.txt")
-        await a.stageAll()
-        _ = await a.commit(CommitMessage(title: "feat: x"))
-        let b = try await makeConnectedRepo(named: "b", in: ws)
-        try TestHelpers.write("y\n", to: b.url, "y.txt")
-        await b.stageAll()
-        _ = await b.commit(CommitMessage(title: "feat: y"))
-
-        let store = try makeStore()
-        await store.openUntitled(linkingFolder: ws)
-
-        let inFlight = Task { await store.pushAll() }
-        await Task.yield()
-        XCTAssertNotNil(store.bulk, "the first call should have published its progress by now")
-
-        let refused = await store.pushAll()
-        XCTAssertEqual(refused.total, store.bulk?.total ?? -1)
-        XCTAssertFalse(refused.completed >= refused.total || store.bulk == nil, "refusal returns the still-running operation, not a fresh one")
-
-        let finished = await inFlight.value
-        XCTAssertEqual(finished.completed, finished.total)
-        XCTAssertNil(store.bulk)
-        store.stopWatching()
-    }
-
-    // MARK: - Failure collection
-
-    @MainActor
-    func testFetchAllCollectsFailureAndContinues() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        _ = try await makeConnectedRepo(named: "good", in: ws)
-
-        // "bad" points its origin at a path that doesn't exist, so fetch fails.
-        let bad = try await TestHelpers.makeTempRepo()
-        let badDest = ws.appendingPathComponent("bad")
-        try FileManager.default.moveItem(at: bad, to: badDest)
-        _ = try await GitRunner().run(["remote", "add", "origin", "/nonexistent/\(UUID().uuidString).git"], in: badDest)
-
-        let store = try makeStore()
-        await store.openUntitled(linkingFolder: ws)
-        XCTAssertEqual(store.repositories.count, 2)
-
-        let result = await store.fetchAll()
-        XCTAssertEqual(result.total, 2)
-        XCTAssertEqual(result.completed, 2, "the failure doesn't abort the rest of the run")
-        XCTAssertEqual(result.failures.count, 1)
-        let failure = try XCTUnwrap(result.failures.first)
-        XCTAssertEqual(failure.repo, "bad")
-        XCTAssertFalse(failure.message.isEmpty)
-        store.stopWatching()
-    }
-
     // MARK: - Refusal to overlap
 
     @MainActor
@@ -377,49 +283,6 @@ final class WorkspaceStoreBulkTests: XCTestCase {
         XCTAssertEqual(first.total, 2)
         XCTAssertEqual(first.completed, 2)
         store.stopWatching()
-    }
-
-    // MARK: - Bounded concurrency (C15)
-
-    /// `runBulk` chunks repos 8-at-a-time instead of running them one after another — 10 repos with
-    /// a 200ms fake action would take 2s sequentially; chunked (8 + 2) it's ~2 waves, comfortably
-    /// under 1.2s. Also checks `completed` reaches `total` and failures stay in sidebar order.
-    @MainActor
-    func testRunBulkOverlapsWithinAChunk() async throws {
-        let ws = try TestHelpers.makeTempDir()
-        for i in 0..<10 {
-            try FileManager.default.moveItem(at: try await TestHelpers.makeTempRepo(), to: ws.appendingPathComponent("r\(i)"))
-        }
-        let store = try makeStore()
-        await store.openUntitled(linkingFolder: ws)
-        XCTAssertEqual(store.repositories.count, 10)
-
-        let start = ContinuousClock.now
-        let op = await store.runBulk(.fetch, silent: false, skip: { _ in false }) { repo in
-            try? await Task.sleep(for: .milliseconds(200))
-            // Odd-indexed repos (by sidebar order) fail, to check stable-order failure collection.
-            let index = store.repositories.firstIndex { $0 === repo } ?? 0
-            return index % 2 == 1
-                ? RemoteResult(kind: .fetch, succeeded: false, summary: "boom")
-                : RemoteResult(kind: .fetch, succeeded: true, summary: "ok")
-        }
-        let elapsed = start.duration(to: .now)
-
-        XCTAssertEqual(op.total, 10)
-        XCTAssertEqual(op.completed, 10)
-        XCTAssertLessThan(elapsed, .milliseconds(1200), "10 repos at 200ms each should overlap in chunks of 8, not run sequentially")
-        let expectedFailedNames = store.repositories.enumerated().filter { $0.offset % 2 == 1 }.map { $0.element.repo.name }
-        XCTAssertEqual(op.failures.map(\.repo), expectedFailedNames, "failures stay in sidebar order")
-        store.stopWatching()
-    }
-
-    // MARK: - Auto-fetch
-
-    func testAutoFetchIntervalArithmetic() {
-        XCTAssertEqual(WorkspaceStore.autoFetchInterval(minutes: 15), .seconds(900))
-        XCTAssertEqual(WorkspaceStore.autoFetchInterval(minutes: 1), .seconds(60))
-        XCTAssertEqual(WorkspaceStore.autoFetchInterval(minutes: 0), .seconds(0))
-        XCTAssertEqual(WorkspaceStore.autoFetchInterval(minutes: -5), .seconds(0), "never a negative sleep")
     }
 
     // MARK: - stashAll

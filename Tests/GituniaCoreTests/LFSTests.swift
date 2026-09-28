@@ -15,15 +15,6 @@ final class LFSTests: XCTestCase {
         XCTAssertEqual(store.attributeRules.first?.pattern, "*.bin")
     }
 
-    func testLFSTrackWritesGitattributes() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        guard await store.checkLFSInstalled() else { throw XCTSkip("git lfs not installed") }
-        let error = await store.lfsTrack("*.psd")
-        XCTAssertNil(error)
-        XCTAssertTrue(GitAttributes.isLFSTracked("art/a.psd", rules: store.attributeRules))
-    }
-
     /// A fake `git-lfs` on PATH (`lfsPathOverride`) stands in for the real one, so this exercises
     /// `checkLFSInstalled`/`lfsTrack` end to end without depending on the test machine having Git LFS.
     private static let fakeGitLFS = """

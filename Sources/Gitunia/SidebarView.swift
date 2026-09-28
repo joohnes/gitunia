@@ -24,7 +24,7 @@ struct SidebarView: View {
                     .selectionDisabled()
                     .listRowSeparator(.hidden)
             }
-            ForEach(Array(WorkspaceStore.sidebarOrder(workspace.visibleRepositories).enumerated()), id: \.element.repo.id) { index, row in
+            ForEach(Array(workspace.sidebarRows.enumerated()), id: \.element.repo.id) { index, row in
                 let store = row.repo
                 RepoRow(store: store, toasts: toasts, remoteOps: remoteOps,
                         isSelected: workspace.selectedRepoID == store.id, showsActivity: workspace.sort == .recent)
@@ -124,7 +124,7 @@ struct SidebarView: View {
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                 .padding(.horizontal, 10)
 
-                ScopeChipsRow(chips: workspace.scopeChips, scope: $workspace.scope)
+                ScopeChipsRow(chips: workspace.sidebarChips, scope: $workspace.scope)
                     .padding(.horizontal, 10)
 
                 if let bulk = workspace.bulk {

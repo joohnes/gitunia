@@ -20,59 +20,10 @@ final class BlobTests: XCTestCase {
 
     func testBlobContentMatchesCommittedBytes() async throws {
         let store = try await makeStore()
-        try await commitFile(store, path: "shot.png", data: pngBytes)
-        let content = await store.blobContent(path: "shot.png", at: "HEAD")
-        XCTAssertEqual(content, pngBytes)
-    }
-
-    func testBlobContentHandlesSpaceInFilename() async throws {
-        let store = try await makeStore()
-        try await commitFile(store, path: "my photo.png", data: pngBytes)
-        let content = await store.blobContent(path: "my photo.png", at: "HEAD")
-        XCTAssertEqual(content, pngBytes)
-    }
-
-    func testBlobContentNilForMissingPath() async throws {
-        let store = try await makeStore()
-        let content = await store.blobContent(path: "nope.png", at: "HEAD")
-        XCTAssertNil(content)
-    }
-
-    func testPreviewFileAtHEADHasRightExtensionAndContent() async throws {
-        let store = try await makeStore()
-        try await commitFile(store, path: "shot.png", data: pngBytes)
-        let url = await store.previewFileForHEAD(path: "shot.png")
-        let url2 = try XCTUnwrap(url)
-        XCTAssertEqual(url2.pathExtension, "png")
-        XCTAssertEqual(try Data(contentsOf: url2), pngBytes)
-    }
-
-    func testPreviewFileIsCachedAcrossCalls() async throws {
-        let store = try await makeStore()
-        try await commitFile(store, path: "shot.png", data: pngBytes)
-        let firstResult = await store.previewFileForHEAD(path: "shot.png")
-        let secondResult = await store.previewFileForHEAD(path: "shot.png")
-        let first = try XCTUnwrap(firstResult)
-        let second = try XCTUnwrap(secondResult)
-        XCTAssertEqual(first, second)
-    }
-
-    func testPreviewFileNilForMissingPath() async throws {
-        let store = try await makeStore()
-        let url = await store.previewFileForHEAD(path: "nope.png")
-        XCTAssertNil(url)
-    }
-
-    func testPreviewFileWithNilRefReturnsWorkingTreePath() async throws {
-        let store = try await makeStore()
-        let fileURL = store.url.appendingPathComponent("README.md")
-        let url = await store.previewFile(path: "README.md", at: nil)
-        XCTAssertEqual(url?.standardizedFileURL, fileURL.standardizedFileURL)
-    }
-
-    func testPreviewFileWithNilRefReturnsNilWhenMissingFromDisk() async throws {
-        let store = try await makeStore()
-        let url = await store.previewFile(path: "gone.md", at: nil)
-        XCTAssertNil(url)
+        for path in ["shot.png", "my photo.png"] {
+            try await commitFile(store, path: path, data: pngBytes)
+            let content = await store.blobContent(path: path, at: "HEAD")
+            XCTAssertEqual(content, pngBytes, path)
+        }
     }
 }

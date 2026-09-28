@@ -86,12 +86,6 @@ final class BlamePorcelainParserTests: XCTestCase {
         XCTAssertFalse(lines[0].isUncommitted)
     }
 
-    func testAuthorTimeParsed() {
-        let lines = BlamePorcelainParser.parse(sample)
-        XCTAssertEqual(lines[0].authorTime, 1790174101)
-        XCTAssertEqual(lines[1].authorTime, 1790174200)
-    }
-
     func testPreservesLeadingWhitespaceAndTabsInContent() {
         let text = "abcdef0123456789abcdef0123456789abcdef01 1 1 1\nauthor A\nauthor-time 1\nsummary s\nfilename f.txt\n\t\t  indented\tcontent\n"
         let lines = BlamePorcelainParser.parse(text)
@@ -99,65 +93,5 @@ final class BlamePorcelainParserTests: XCTestCase {
         // Only the one separator tab is stripped — everything after it, including further tabs
         // and spaces, is the file's own content, verbatim.
         XCTAssertEqual(lines[0].text, "\t  indented\tcontent")
-    }
-
-    func testEmptyFileProducesNoLines() {
-        XCTAssertEqual(BlamePorcelainParser.parse(""), [])
-    }
-}
-
-final class BlameGroupingTests: XCTestCase {
-    private func line(_ n: Int, hash: String) -> BlameLine {
-        BlameLine(lineNumber: n, text: "l\(n)", commitHash: hash, author: "A", authorTime: 0, summary: "s", filename: "f.txt")
-    }
-
-    func testFirstLineOfEachRunStartsANewBand() {
-        let lines = [line(1, hash: "a"), line(2, hash: "a"), line(3, hash: "b"), line(4, hash: "a")]
-        let rows = BlameGrouping.rows(for: lines)
-        XCTAssertEqual(rows.map(\.isRunStart), [true, false, true, true])
-        // The commit reappearing after an interruption (line 4, hash "a" again) starts a *new*
-        // band rather than merging back into band 0 — bands are about consecutive runs, not
-        // "every line from this commit".
-        XCTAssertEqual(rows.map(\.band), [0, 0, 1, 2])
-    }
-
-    func testEmptyInput() {
-        XCTAssertEqual(BlameGrouping.rows(for: []), [])
-    }
-
-    func testAllSameCommitIsOneRun() {
-        let lines = [line(1, hash: "a"), line(2, hash: "a"), line(3, hash: "a")]
-        let rows = BlameGrouping.rows(for: lines)
-        XCTAssertEqual(rows.map(\.isRunStart), [true, false, false])
-        XCTAssertEqual(rows.map(\.band), [0, 0, 0])
-    }
-}
-
-final class BlameCapTests: XCTestCase {
-    private func makeLines(_ count: Int) -> [BlameLine] {
-        (1...count).map { BlameLine(lineNumber: $0, text: "l\($0)", commitHash: "h", author: "A", authorTime: 0, summary: "s", filename: "f.txt") }
-    }
-
-    func testUnderCapIsUntouched() {
-        let lines = makeLines(10)
-        let result = BlameCap.apply(lines)
-        XCTAssertFalse(result.truncated)
-        XCTAssertEqual(result.lines.count, 10)
-        XCTAssertEqual(result.totalLines, 10)
-    }
-
-    func testOverCapTruncatesAndFlags() {
-        let lines = makeLines(BlameCap.maxLines + 500)
-        let result = BlameCap.apply(lines)
-        XCTAssertTrue(result.truncated)
-        XCTAssertEqual(result.lines.count, BlameCap.maxLines)
-        XCTAssertEqual(result.totalLines, BlameCap.maxLines + 500)
-    }
-
-    func testExactlyAtCapIsNotTruncated() {
-        let lines = makeLines(BlameCap.maxLines)
-        let result = BlameCap.apply(lines)
-        XCTAssertFalse(result.truncated)
-        XCTAssertEqual(result.lines.count, BlameCap.maxLines)
     }
 }

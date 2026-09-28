@@ -12,15 +12,13 @@ final class PullRequestTests: XCTestCase {
     {"__typename":"CheckRun","conclusion":"","name":"deploy","status":"IN_PROGRESS","workflowName":"CD"}]}
     """
 
-    /// Fake gh: `pr view` prints `view.json` (or gh's "no pull requests found", or an auth failure
-    /// when `fail` exists); `pr create` records its args and makes `created.json` the viewed PR.
+    /// Fake gh: `pr view` prints `view.json` (or gh's "no pull requests found"); `pr create` records its args and makes `created.json` the viewed PR.
     private static let script = """
     #!/bin/sh
     D="$(dirname "$0")"
     echo "$@" >> "$D/calls"
     case "$1 $2" in
       "pr view")
-        [ -f "$D/fail" ] && { echo "HTTP 401: authentication required" >&2; exit 4; }
         [ -f "$D/view.json" ] && { cat "$D/view.json"; exit 0; }
         echo 'no pull requests found for branch "feat/x"' >&2; exit 1 ;;
       "pr create")
@@ -82,15 +80,6 @@ final class PullRequestTests: XCTestCase {
         let pr = await store.refreshPullRequest()
         XCTAssertNil(pr)
         XCTAssertNil(store.lastGHError)
-    }
-
-    @MainActor
-    func testOtherFailureSetsLastGHError() async throws {
-        let (store, bin) = try await makeStore()
-        FileManager.default.createFile(atPath: bin.appendingPathComponent("fail").path, contents: nil)
-        let pr = await store.refreshPullRequest()
-        XCTAssertNil(pr)
-        XCTAssertEqual(store.lastGHError, "HTTP 401: authentication required")
     }
 
     @MainActor

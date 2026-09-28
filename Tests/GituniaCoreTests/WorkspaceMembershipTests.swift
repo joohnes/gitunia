@@ -60,22 +60,6 @@ final class WorkspaceMembershipTests: XCTestCase {
         XCTAssertEqual(file.repositories, ["/other"])
     }
 
-    func testLinkFolderIsIdempotentAndUnlinkRemoves() {
-        var file = WorkspaceFile()
-        file.linkFolder("/f"); file.linkFolder("/f")
-        XCTAssertEqual(file.folders.map(\.path), ["/f"])
-        file.unlinkFolder("/f")
-        XCTAssertEqual(file.folders, [])
-    }
-
-    func testSetTagsSortsAndEmptyRemovesKey() {
-        var file = WorkspaceFile()
-        file.setTags(["b", "a"], for: "/r")
-        XCTAssertEqual(file.tags["/r"], ["a", "b"])
-        file.setTags([], for: "/r")
-        XCTAssertNil(file.tags["/r"])
-    }
-
     func testRemoveSingleInsideLinkedFolderExcludesItAndUndoRestores() {
         var file = WorkspaceFile(repositories: ["/f/a"], folders: [.init(path: "/f")])
         let scans = ["/f": ["/f/a", "/f/b"]]

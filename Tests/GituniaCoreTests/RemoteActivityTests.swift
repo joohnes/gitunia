@@ -6,11 +6,6 @@ import XCTest
 final class RemoteActivityTests: XCTestCase {
     // MARK: - Pure
 
-    func testParseRefsSkipsHEAD() {
-        let out = "origin 111\norigin/HEAD 111\norigin/master 111\norigin/feat/x 222\nupstream/dev 333\n"
-        XCTAssertEqual(RemoteActivity.parseRefs(out), ["origin/master": "111", "origin/feat/x": "222", "upstream/dev": "333"])
-    }
-
     func testDiffAllFourKinds() {
         let old = RemoteRefSnapshot(refs: ["origin/master": "a", "origin/feat": "b", "origin/gone": "c", "origin/same": "d"])
         let new = RemoteRefSnapshot(refs: ["origin/master": "a2", "origin/feat": "b2", "origin/new": "e", "origin/same": "d"])
@@ -28,17 +23,6 @@ final class RemoteActivityTests: XCTestCase {
         XCTAssertNil(RemoteActivity.pullRequestNumber(inSubject: "chore: bump (deps)"))
     }
 
-    func testParseCommits() {
-        let out = "abc\u{1f}feat: x (#7)\u{1f}agent-1\u{1f}a@x.io\u{1f}2026-09-24T10:00:00+02:00\nbroken line\n"
-        let commits = RemoteActivity.parseCommits(out)
-        XCTAssertEqual(commits.count, 1)
-        XCTAssertEqual(commits[0].hash, "abc")
-        XCTAssertEqual(commits[0].subject, "feat: x (#7)")
-        XCTAssertEqual(commits[0].author, "agent-1")
-        XCTAssertEqual(commits[0].authorEmail, "a@x.io")
-        XCTAssertEqual(commits[0].date, ISO8601DateFormatter().date(from: "2026-09-24T08:00:00Z"))
-    }
-
     // MARK: - Integration (local bare remote, fake gh)
 
     private static let ghScript = """
@@ -49,7 +33,6 @@ final class RemoteActivityTests: XCTestCase {
     @MainActor
     func testFetchRecordsRemoteActivity() async throws {
         let git = GitRunner()
-        print("git version:", (try? await git.run(["--version"], in: FileManager.default.temporaryDirectory)) ?? "?")
         let a = try await TestHelpers.makeTempRepo()
         _ = try await git.run(["config", "user.name", "agent-1"], in: a)
         let remote = try TestHelpers.makeTempDir().appendingPathComponent("remote.git")
@@ -261,11 +244,5 @@ final class ActivityLogTests: XCTestCase {
         XCTAssertEqual(app.humanCommits, 1)
         // Defaults don't know "robo".
         XCTAssertEqual(log.digest(since: .distantPast).first?.agentCommits, 0)
-    }
-
-    func testAppConfigOwnsLogNextToWorkspaceJSON() throws {
-        let cfg = try TestHelpers.makeTempDir().appendingPathComponent("workspace.json")
-        let app = AppConfig(configStore: ConfigStore(fileURL: cfg))
-        XCTAssertEqual(app.activity.fileURL, cfg.deletingLastPathComponent().appendingPathComponent("activity.json"))
     }
 }

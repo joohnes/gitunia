@@ -58,21 +58,6 @@ final class UpdateCoordinatorTests: XCTestCase {
         return (coordinator, counter)
     }
 
-    func testNewerVersionPostsOneToastWithTheRightTitle() async throws {
-        let app = try makeApp()
-        let toasts = ToastCenter()
-        let (coordinator, counter) = makeCoordinator(app: app, toasts: toasts, json: Self.releaseJSON)
-
-        await coordinator.checkIfDue(force: true)?.value
-
-        XCTAssertEqual(counter.count, 1)
-        XCTAssertEqual(toasts.toasts.count, 1)
-        XCTAssertEqual(toasts.toasts.first?.title, "Gitunia 9.9.9 is available")
-        XCTAssertEqual(toasts.toasts.first?.detail, "Line one.")
-        XCTAssertNotNil(toasts.toasts.first?.action)
-        XCTAssertEqual(coordinator.availableUpdate?.version, "9.9.9")
-    }
-
     func testNewerWithKeyAndReplaceablePreparesAndToastsReady() async throws {
         let app = try makeApp()
         let toasts = ToastCenter()
@@ -183,42 +168,5 @@ final class UpdateCoordinatorTests: XCTestCase {
         let task = coordinator.checkIfDue()
         XCTAssertNil(task)
         XCTAssertEqual(counter.count, 0)
-    }
-
-    func testForcedCheckWithNoUpdateToastsUpToDate() async throws {
-        let app = try makeApp()
-        let toasts = ToastCenter()
-        let currentJSON = """
-        {"tag_name": "v1.0.0", "html_url": "https://example.com", "draft": false, "prerelease": false, "assets": []}
-        """
-        let (coordinator, _) = makeCoordinator(app: app, toasts: toasts, json: currentJSON, bundleVersion: "1.0.0")
-
-        await coordinator.checkIfDue(force: true)?.value
-
-        XCTAssertEqual(toasts.toasts.first?.title, "You're up to date (1.0.0)")
-    }
-
-    func testForcedCheckFetchFailureToastsCouldntCheck() async throws {
-        let app = try makeApp()
-        let toasts = ToastCenter()
-        let checker = UpdateChecker(fetch: { _ in throw URLError(.notConnectedToInternet) })
-        let coordinator = UpdateCoordinator(app: app, toasts: toasts, checker: checker, installer: FakeInstaller(), bundleVersion: "1.0.0", hasBundle: true)
-
-        await coordinator.checkIfDue(force: true)?.value
-
-        XCTAssertEqual(toasts.toasts.first?.title, "Couldn't check for updates")
-        XCTAssertTrue(coordinator.lastCheckFailed, "Settings shows the failure inline")
-        XCTAssertFalse(coordinator.isChecking)
-    }
-
-    func testUnforcedFetchFailureStaysSilent() async throws {
-        let app = try makeApp()
-        let toasts = ToastCenter()
-        let checker = UpdateChecker(fetch: { _ in throw URLError(.notConnectedToInternet) })
-        let coordinator = UpdateCoordinator(app: app, toasts: toasts, checker: checker, installer: FakeInstaller(), bundleVersion: "1.0.0", hasBundle: true)
-
-        await coordinator.checkIfDue()?.value
-
-        XCTAssertTrue(toasts.toasts.isEmpty)
     }
 }

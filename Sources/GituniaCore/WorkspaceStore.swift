@@ -21,6 +21,14 @@ public enum RepoSort: String, Sendable, CaseIterable {
 
 /// One scope chip's label and live count, for the sidebar header row. Pure data — the view just
 /// renders it.
+/// One sidebar row: a repo and its indent (1 = linked worktree under its main repo). Equal by
+/// identity, so a row's own status changes never make two lists differ.
+public struct SidebarRow: Equatable {
+    public let repo: RepositoryStore
+    public let depth: Int
+    public static func == (l: SidebarRow, r: SidebarRow) -> Bool { l.repo === r.repo && l.depth == r.depth }
+}
+
 public struct ScopeChip: Identifiable, Hashable, Sendable {
     public let scope: RepoScope
     public let label: String
@@ -68,6 +76,11 @@ public final class WorkspaceStore {
     var bulkInFlight = false
     /// Last failed write of the workspace file (nil after a successful one) — the UI toasts it.
     public private(set) var saveError: String?
+    /// `sidebarOrder(visibleRepositories)` and `scopeChips`, stored and reassigned only when they
+    /// actually differ — the sidebar reads these, not the computed ones, because those read every
+    /// repo's state and would re-render the whole list on any repo's status tick. See `trackSidebar`.
+    public private(set) var sidebarRows: [SidebarRow] = []
+    public private(set) var sidebarChips: [ScopeChip] = []
     /// Every member repo's `RepoEvent`s (commits, new branches, stopped operations, rescan joins).
     @ObservationIgnored public var onRepoEvents: ((RepositoryStore, [RepoEvent]) -> Void)?
 
@@ -96,6 +109,20 @@ public final class WorkspaceStore {
         self.draftDebounce = draftDebounce
         self.saveDebounce = saveDebounce
         app.attach(self)
+        trackSidebar()
+    }
+
+    /// Recomputes `sidebarRows`/`sidebarChips` whenever anything they're derived from changes
+    /// (membership, scope, sort, search, any repo's state) — observation finds every dependency, so
+    /// there's no trigger list to forget — and publishes only a real difference.
+    private func trackSidebar() {
+        let (rows, chips) = withObservationTracking {
+            (Self.sidebarOrder(visibleRepositories).map { SidebarRow(repo: $0.repo, depth: $0.depth) }, scopeChips)
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.trackSidebar() }
+        }
+        if rows != sidebarRows { sidebarRows = rows }
+        if chips != sidebarChips { sidebarChips = chips }
     }
 
     /// Tests and previews: a store with its own `AppConfig` over `configStore`.

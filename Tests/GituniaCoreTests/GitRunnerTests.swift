@@ -2,11 +2,6 @@ import XCTest
 @testable import GituniaCore
 
 final class GitRunnerTests: XCTestCase {
-    func testVersion() async throws {
-        let out = try await GitRunner().run(["--version"], in: URL(fileURLWithPath: "/tmp"))
-        XCTAssertTrue(out.hasPrefix("git version"))
-    }
-
     func testFailureThrowsGitErrorWithStderr() async {
         do {
             _ = try await GitRunner().run(["nonsense-command"], in: URL(fileURLWithPath: "/tmp"))

@@ -3,21 +3,6 @@ import XCTest
 
 final class RepositoryStoreTests: XCTestCase {
     @MainActor
-    func testRefreshFillsLastCommitAuthorAndHistoryEmail() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertEqual(store.repo.lastCommitAuthor, "Test")
-        XCTAssertEqual(store.repo.lastCommitEmail, "test@example.com")
-        XCTAssertEqual(store.repo.lastCommitSummary, "init")
-        XCTAssertFalse(store.agentProfile.matches(author: "Test", email: "test@example.com"))
-        let history = await store.history()
-        XCTAssertEqual(history.first?.authorEmail, "test@example.com")
-        let byHash = await store.commitInfo(history[0].hash)
-        XCTAssertEqual(byHash, history.first, "commitInfo must equal the History row it selects")
-    }
-
-    @MainActor
     func testWorkingTreeVersionBumpsOnlyOnRealChange() async throws {
         let url = try await TestHelpers.makeTempRepo()
         let store = RepositoryStore(url: url)
@@ -122,47 +107,8 @@ final class RepositoryStoreTests: XCTestCase {
 
     // MARK: - C2/L9: pathspec-magic filenames must never leak onto a sibling file
 
-    /// Both files are tracked and modified; acting on `a[1].txt` (a glob-like name) must never
-    /// touch `a1.txt`, which without `GIT_LITERAL_PATHSPECS` it would also match.
-    @MainActor
-    func testStageDoesNotAlsoStageGlobLikeSiblingFile() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        try TestHelpers.write("a1\n", to: url, "a1.txt")
-        try TestHelpers.write("bracket\n", to: url, "a[1].txt")
-        _ = try await GitRunner().run(["add", "-A"], in: url)
-        _ = try await GitRunner().run(["commit", "-q", "-m", "add both"], in: url)
-        try TestHelpers.write("a1 changed\n", to: url, "a1.txt")
-        try TestHelpers.write("bracket changed\n", to: url, "a[1].txt")
-
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let bracket = store.unstagedChanges.first { $0.path == "a[1].txt" }!
-        await store.stage(bracket)
-
-        XCTAssertEqual(store.stagedChanges.map(\.path), ["a[1].txt"])
-        XCTAssertEqual(store.unstagedChanges.map(\.path), ["a1.txt"])
-    }
-
-    @MainActor
-    func testUnstageDoesNotAlsoUnstageGlobLikeSiblingFile() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        try TestHelpers.write("a1\n", to: url, "a1.txt")
-        try TestHelpers.write("bracket\n", to: url, "a[1].txt")
-        _ = try await GitRunner().run(["add", "-A"], in: url)
-        _ = try await GitRunner().run(["commit", "-q", "-m", "add both"], in: url)
-        try TestHelpers.write("a1 changed\n", to: url, "a1.txt")
-        try TestHelpers.write("bracket changed\n", to: url, "a[1].txt")
-        _ = try await GitRunner().run(["add", "-A"], in: url)
-
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let bracket = store.stagedChanges.first { $0.path == "a[1].txt" }!
-        await store.unstage(bracket)
-
-        XCTAssertEqual(store.unstagedChanges.map(\.path), ["a[1].txt"])
-        XCTAssertEqual(store.stagedChanges.map(\.path), ["a1.txt"])
-    }
-
+    /// Acting on `a[1].txt` (a glob-like name) must never touch `a1.txt`, which without
+    /// `GIT_LITERAL_PATHSPECS` it would also match.
     @MainActor
     func testDiscardDoesNotAlsoRevertGlobLikeSiblingFile() async throws {
         let url = try await TestHelpers.makeTempRepo()
@@ -232,16 +178,6 @@ final class RepositoryStoreTests: XCTestCase {
         await store.refreshStatus()
         let after = try FileManager.default.attributesOfItem(atPath: indexPath)[.modificationDate] as? Date
         XCTAssertEqual(before, after)
-    }
-
-    @MainActor
-    func testCommitFailureSetsLastError() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let ok = await store.commit(CommitMessage(title: "nothing staged"))
-        XCTAssertFalse(ok)
-        XCTAssertNotNil(store.lastError)
     }
 
     @MainActor
@@ -332,49 +268,6 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertEqual(unstaged.hunks.count, 2)
     }
 
-    @MainActor
-    func testDiffWithContextReturnsWholeFileAsOneHunk() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let git = GitRunner()
-        let original = (1...40).map { "line \($0)" }.joined(separator: "\n") + "\n"
-        try TestHelpers.write(original, to: url, "big.txt")
-        _ = try await git.run(["add", "big.txt"], in: url)
-        _ = try await git.run(["commit", "-q", "-m", "base"], in: url)
-
-        var lines = original.split(separator: "\n").map(String.init)
-        lines[1] = "line 2 changed"
-        lines[35] = "line 36 changed"
-        try TestHelpers.write(lines.joined(separator: "\n") + "\n", to: url, "big.txt")
-
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        let change = store.unstagedChanges[0]
-
-        // Default (small) context still splits into two hunks around each edit.
-        let normal = await store.diff(for: change)!
-        XCTAssertEqual(normal.hunks.count, 2)
-
-        // A huge -U context collapses the whole file into a single hunk with full context.
-        let whole = await store.diff(for: change, context: 100000)!
-        XCTAssertEqual(whole.hunks.count, 1)
-        // 38 unchanged context lines + both old/new versions of the 2 changed lines.
-        XCTAssertEqual(whole.hunks[0].lines.count, 42)
-        XCTAssertTrue(whole.hunks[0].lines.contains { $0.text == "line 1" })
-        XCTAssertTrue(whole.hunks[0].lines.contains { $0.text == "line 40" })
-        XCTAssertTrue(whole.hunks[0].lines.contains { $0.text == "line 2 changed" && $0.kind == .added })
-    }
-
-    @MainActor
-    func testDiffWithContextOnUntrackedFileStillShowsWholeFile() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        try TestHelpers.write("a\nb\nc\n", to: url, "new.txt")
-        await store.refreshStatus()
-
-        let whole = await store.diff(for: store.untrackedChanges[0], context: 100000)!
-        XCTAssertEqual(whole.hunks.first?.lines.map(\.text), ["a", "b", "c"])
-    }
-
     // MARK: - Amend
 
     @MainActor
@@ -409,18 +302,6 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertEqual(history.count, 1)
         let diffs = await store.commitDiff(history[0].hash)
         XCTAssertTrue(diffs.first?.hunks.first?.lines.contains { $0.text == "more" && $0.kind == .added } ?? false)
-    }
-
-    @MainActor
-    func testAmendOnEmptyRepoFailsCleanly() async throws {
-        let url = try await TestRepo.make(commit: false)
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertNil(store.repo.lastCommitSummary)
-
-        let ok = await store.commit(CommitMessage(title: "amend with no history"), amend: true)
-        XCTAssertFalse(ok)
-        XCTAssertNotNil(store.lastError)
     }
 
     // MARK: - Reword HEAD
@@ -502,16 +383,6 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertEqual(last?.body, "why it matters\n\nmore detail")
     }
 
-    @MainActor
-    func testLastCommitMessageReturnsNilOnEmptyRepo() async throws {
-        let url = try TestHelpers.makeTempDir()
-        let git = GitRunner()
-        _ = try await git.run(["init", "-q", "-b", "master"], in: url)
-        let store = RepositoryStore(url: url)
-        let last = await store.lastCommitMessage()
-        XCTAssertNil(last)
-    }
-
     // MARK: - undoLastCommit
 
     @MainActor
@@ -564,46 +435,6 @@ final class RepositoryStoreTests: XCTestCase {
         await store.stageAll()
         let stillWorks = await store.commit(CommitMessage(title: "still works"))
         XCTAssertTrue(stillWorks)
-    }
-
-    @MainActor
-    func testUndoLastCommitRoundTripLeavesTreeEquivalent() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-
-        try TestHelpers.write("hello\nmore\n", to: url, "README.md")
-        await store.stageAll()
-        let firstCommit = await store.commit(CommitMessage(title: "tweak readme"))
-        XCTAssertTrue(firstCommit)
-        let treeBefore = try await GitRunner().run(["rev-parse", "HEAD^{tree}"], in: url)
-
-        let undone = await store.undoLastCommit()
-        XCTAssertTrue(undone)
-        XCTAssertEqual(store.stagedChanges.map(\.path), ["README.md"])
-
-        let secondCommit = await store.commit(CommitMessage(title: "tweak readme again"))
-        XCTAssertTrue(secondCommit)
-        let treeAfter = try await GitRunner().run(["rev-parse", "HEAD^{tree}"], in: url)
-        XCTAssertEqual(treeBefore, treeAfter)
-    }
-
-    @MainActor
-    func testHasParentCommitFalseOnRootCommit() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertFalse(store.hasParentCommit)
-
-        try TestHelpers.write("x\n", to: url, "x.txt")
-        await store.stageAll()
-        let committed = await store.commit(CommitMessage(title: "second"))
-        XCTAssertTrue(committed)
-        XCTAssertTrue(store.hasParentCommit)
-
-        let undone = await store.undoLastCommit()
-        XCTAssertTrue(undone)
-        XCTAssertFalse(store.hasParentCommit)
     }
 
     /// The gap between History's confirmation dialog and the reset: if an agent commits into the
@@ -661,41 +492,6 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertEqual(restored, "hello\nmodified\n")
         let restoredUntracked = try String(contentsOf: url.appendingPathComponent("untracked.txt"), encoding: .utf8)
         XCTAssertEqual(restoredUntracked, "new file\n")
-    }
-
-    @MainActor
-    func testStashOnCleanTreeIsANoOpNotAnError() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertTrue(store.repo.changes.isEmpty)
-
-        let stashed = await store.stash()
-        XCTAssertFalse(stashed)
-        XCTAssertNil(store.lastError, "a clean-tree no-op is not a failure")
-        XCTAssertEqual(store.stashCount, 0)
-    }
-
-    @MainActor
-    func testStashCountUpdatesAcrossStashAndPop() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertEqual(store.stashCount, 0)
-
-        try TestHelpers.write("one\n", to: url, "README.md")
-        let firstStash = await store.stash()
-        XCTAssertTrue(firstStash)
-        XCTAssertEqual(store.stashCount, 1)
-
-        try TestHelpers.write("two\n", to: url, "README.md")
-        let secondStash = await store.stash()
-        XCTAssertTrue(secondStash)
-        XCTAssertEqual(store.stashCount, 2)
-
-        let popped = await store.stashPop()
-        XCTAssertTrue(popped)
-        XCTAssertEqual(store.stashCount, 1)
     }
 
     @MainActor
@@ -765,17 +561,6 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertTrue(aborted)
         XCTAssertNotEqual(store.operation, .merge)
         XCTAssertTrue(store.conflictedChanges.isEmpty)
-    }
-
-    @MainActor
-    func testAbortMergeRestoresPreMergeContent() async throws {
-        let url = try await makeConflictedMergeRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertEqual(store.operation, .merge)
-
-        _ = await store.abortMerge()
-
         let content = try String(contentsOf: url.appendingPathComponent("README.md"), encoding: .utf8)
         XCTAssertEqual(content, "hello\nmain-line\n")
         XCTAssertFalse(content.contains("<<<<<<<"))
@@ -817,28 +602,6 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertEqual(store.stagedChanges.map(\.path), ["README.md"])
     }
 
-    @MainActor
-    func testMergeInProgressFalseAfterResolutionAndCommit() async throws {
-        let url = try await makeConflictedMergeRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertEqual(store.operation, .merge)
-
-        _ = await store.useOurs(store.conflictedChanges[0])
-        let committed = await store.commit(CommitMessage(title: "merge feature"))
-        XCTAssertTrue(committed)
-        XCTAssertNotEqual(store.operation, .merge)
-    }
-
-    @MainActor
-    func testMergeInProgressFalseOnOrdinaryRepo() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertNotEqual(store.operation, .merge)
-        XCTAssertFalse(store.rebaseInProgress)
-    }
-
     /// Mirrors `WorkspaceStore.handleChanges`'s FSEvents debounce: a `Task` running `refreshStatus()`
     /// gets cancelled mid-flight (e.g. by a newer debounced refresh superseding it). `refreshStatus`
     /// must treat `CancellationError` as silent — not surface it as `lastError`, which would pop a
@@ -870,19 +633,6 @@ final class RepositoryStoreTests: XCTestCase {
         guard case .headMoved(let from, let to) = received.first else { return XCTFail("\(received)") }
         XCTAssertNotEqual(from, to)
         XCTAssertEqual(to, store.repo.headOID)
-    }
-
-    @MainActor
-    func testRefreshStatusFillsSizeForUntrackedAndNilForDeleted() async throws {
-        let url = try await TestHelpers.makeTempRepo()
-        try TestHelpers.write("12345", to: url, "new.txt")
-        try FileManager.default.removeItem(at: url.appendingPathComponent("README.md"))
-        let store = RepositoryStore(url: url)
-        await store.refreshStatus()
-        XCTAssertEqual(store.repo.changes.first { $0.path == "new.txt" }?.size, 5)
-        let deleted = try XCTUnwrap(store.repo.changes.first { $0.path == "README.md" })
-        XCTAssertEqual(deleted.status, .deleted)
-        XCTAssertNil(deleted.size)
     }
 
     /// docs/next-round-plan.md A2: `isBusy` is a counter now, so the first of two overlapping

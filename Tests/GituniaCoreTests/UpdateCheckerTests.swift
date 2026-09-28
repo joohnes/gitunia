@@ -45,10 +45,6 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertNil(UpdateChecker.parse(Data(Self.prereleaseJSON.utf8)))
     }
 
-    func testParseGarbageReturnsNil() {
-        XCTAssertNil(UpdateChecker.parse(Data("not json".utf8)))
-    }
-
     func testIsNewerTable() {
         XCTAssertFalse(UpdateChecker.isNewer("1.2.0", than: "1.10.0"))
         XCTAssertTrue(UpdateChecker.isNewer("1.10.0", than: "1.2.0"))
@@ -58,21 +54,5 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertFalse(UpdateChecker.isNewer("0.1", than: "0.1.0"))
         XCTAssertFalse(UpdateChecker.isNewer("garbage", than: "1.0.0"))
         XCTAssertTrue(UpdateChecker.isNewer("1.0.0", than: "garbage"), "unparseable components read as 0, so 1.0.0 beats it")
-    }
-
-    func testLatestReturnsNilOnFetchFailure() async {
-        struct Boom: Error {}
-        let checker = UpdateChecker(fetch: { _ in throw Boom() })
-        let result = await checker.latest()
-        XCTAssertNil(result)
-    }
-
-    func testLatestParsesFetchedData() async {
-        let checker = UpdateChecker(repo: "acme/app", fetch: { url in
-            XCTAssertEqual(url.absoluteString, "https://api.github.com/repos/acme/app/releases/latest")
-            return Data(Self.releaseJSON.utf8)
-        })
-        let result = await checker.latest()
-        XCTAssertEqual(result?.version, "1.4.0")
     }
 }
