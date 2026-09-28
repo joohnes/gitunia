@@ -19,8 +19,8 @@ final class SidebarInvalidationTests: XCTestCase {
     private func sidebar(_ ws: WorkspaceStore) -> Flag { track { _ = ws.sidebarRows; _ = ws.sidebarChips } }
     private func row(_ store: RepositoryStore) -> Flag { track { _ = store.repo; _ = store.operation; _ = store.branches } }
 
-    /// Lets the store's re-tracking task run.
-    private func settle() async throws { try await Task.sleep(for: .milliseconds(20)) }
+    /// Lets the store's re-tracking task run. Generous: CI runners oversleep and reschedule late.
+    private func settle() async throws { try await Task.sleep(for: .milliseconds(200)) }
 
     private func makeWorkspace() async throws -> (WorkspaceStore, a: RepositoryStore, b: RepositoryStore) {
         let root = try TestHelpers.makeTempDir()

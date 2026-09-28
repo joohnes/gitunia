@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # One release at a time; a newer push waits instead of racing the tag.
 concurrency:
@@ -17,10 +17,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: macos-26
+  # Stage 1: work out the version; everything else is skipped if it is already released.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.exists.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # the commit count is the patch number
 
@@ -38,18 +42,32 @@ jobs:
         run: |
           if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::v${{ steps.version.outputs.version }} is already released."
           fi
 
+  # Stage 2a: tests, in parallel with the build.
+  test:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
       - name: Test
-        if: steps.exists.outputs.skip != 'true'
         run: swift test
+
+  # Stage 2b: signed universal DMG plus its update signature and checksum.
+  build:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
 
       # A fixed certificate keeps the app's designated requirement the same across releases, so
       # macOS keeps Gitunia's folder access after an update (ad-hoc re-prompts every time). Once
       # packaging/signing-certificate.txt is committed, a missing secret fails the release instead
       # of shipping an ad-hoc build every user's updater would refuse.
       - name: Import signing certificate
-        if: steps.exists.outputs.skip != 'true'
         env:
           SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
           SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
@@ -74,14 +92,12 @@ jobs:
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
 
       - name: Build DMG
-        if: steps.exists.outputs.skip != 'true'
-        run: REQUIRE_SIGNING=1 UNIVERSAL=1 VERSION="${{ steps.version.outputs.version }}" scripts/make-dmg.sh
+        run: REQUIRE_SIGNING=1 UNIVERSAL=1 VERSION="${{ needs.version.outputs.version }}" scripts/make-dmg.sh
 
       # The app only installs updates whose DMG is signed with the key matching
       # packaging/update-public-key.txt. If that file is committed, a missing secret would ship
       # builds nobody can auto-update to, so it fails the release instead.
       - name: Sign update
-        if: steps.exists.outputs.skip != 'true'
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
@@ -93,19 +109,41 @@ jobs:
             echo "::warning::No update signing key — this release can only be installed manually."
             exit 0
           fi
-          swift scripts/sign-update.swift sign "dist/Gitunia-${{ steps.version.outputs.version }}.dmg"
+          swift scripts/sign-update.swift sign "dist/Gitunia-${{ needs.version.outputs.version }}.dmg"
 
       - name: Checksum
-        if: steps.exists.outputs.skip != 'true'
         run: cd dist && shasum -a 256 *.dmg > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sig
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # Stage 3: tag and publish — only once tests and build have both passed.
+  publish:
+    needs: [version, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
 
       # An annotated tag on the released commit, pushed before the release so the release points
       # at it (`git tag -l`, `git describe` and the GitHub tag list all show every release).
       # Created only after tests and build pass, so a failed run leaves no tag behind.
       - name: Tag
-        if: steps.exists.outputs.skip != 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -115,10 +153,9 @@ jobs:
           fi
 
       - name: Publish release
-        if: steps.exists.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           shopt -s nullglob
           gh release create "v$VERSION" dist/*.dmg dist/*.dmg.sig dist/SHA256SUMS.txt \

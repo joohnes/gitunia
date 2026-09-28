@@ -643,21 +643,11 @@ final class RepositoryStoreTests: XCTestCase {
         let store = RepositoryStore(url: url)
         XCTAssertFalse(store.isBusy)
 
-        async let shorter: Void = { @MainActor in
-            store.beginBusy()
-            try? await Task.sleep(for: .milliseconds(100))
-            store.endBusy()
-        }()
-        async let longer: Void = { @MainActor in
-            try? await Task.sleep(for: .milliseconds(20))
-            store.beginBusy()
-            try? await Task.sleep(for: .milliseconds(200))
-            store.endBusy()
-        }()
-
-        try await Task.sleep(for: .milliseconds(130))
+        store.beginBusy()   // longer operation starts
+        store.beginBusy()   // shorter operation starts
+        store.endBusy()     // shorter one finishes first
         XCTAssertTrue(store.isBusy, "the shorter operation finished but the longer one is still in flight")
-        _ = await (shorter, longer)
+        store.endBusy()
         XCTAssertFalse(store.isBusy, "both operations finished")
     }
 }

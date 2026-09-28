@@ -5,14 +5,28 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the running check.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  test:
+    name: Test
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v5
       - name: Test
         run: swift test
+
+  build:
+    name: Build DMG
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Build DMG
         run: UNIVERSAL=1 VERSION="0.0.0-${GITHUB_SHA::7}" scripts/make-dmg.sh

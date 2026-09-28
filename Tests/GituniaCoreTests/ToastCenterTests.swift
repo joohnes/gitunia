@@ -16,12 +16,14 @@ final class ToastCenterTests: XCTestCase {
 
     @MainActor
     func testActionToastOutlivesPlainToast() async throws {
-        let center = ToastCenter(autoDismiss: .milliseconds(30), actionAutoDismiss: .milliseconds(200))
+        // Wide gap between the two windows and polling instead of fixed sleeps: CI runners can
+        // oversleep by hundreds of ms.
+        let center = ToastCenter(autoDismiss: .milliseconds(30), actionAutoDismiss: .seconds(3))
         center.post(.success("plain"))
         center.post(Toast(style: .success, title: "undoable", action: ToastAction(title: "Undo") {}))
-        try await Task.sleep(for: .milliseconds(100))
+        try await TestHelpers.waitUntil { center.toasts.count == 1 }
         XCTAssertEqual(center.toasts.map(\.title), ["undoable"])
-        try await Task.sleep(for: .milliseconds(200))
+        try await TestHelpers.waitUntil(timeout: 10) { center.toasts.isEmpty }
         XCTAssertTrue(center.toasts.isEmpty)
     }
 }
