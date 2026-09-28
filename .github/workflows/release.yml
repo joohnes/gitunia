@@ -1,0 +1,99 @@
+name: Release
+
+# Every push to the default branch (i.e. every merged PR) becomes a release:
+# version = <VERSION file>.<number of commits on the branch>, e.g. 0.2.143 — always increasing,
+# no manual tagging. The app's in-app updater picks it up from releases/latest.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One release at a time; a newer push waits instead of racing the tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the commit count is the patch number
+
+      - name: Version
+        id: version
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION).$(git rev-list --count HEAD)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $VERSION"
+
+      - name: Skip if already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test
+        if: steps.exists.outputs.skip != 'true'
+        run: swift test
+
+      - name: Build DMG
+        if: steps.exists.outputs.skip != 'true'
+        run: UNIVERSAL=1 VERSION="${{ steps.version.outputs.version }}" scripts/make-dmg.sh
+
+      # The app only installs updates whose DMG is signed with the key matching
+      # packaging/update-public-key.txt. If that file is committed, a missing secret would ship
+      # builds nobody can auto-update to, so it fails the release instead.
+      - name: Sign update
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [[ -z "$UPDATE_SIGNING_KEY" ]]; then
+            if [[ -s packaging/update-public-key.txt ]]; then
+              echo "::error::packaging/update-public-key.txt exists but the UPDATE_SIGNING_KEY secret is not set."
+              exit 1
+            fi
+            echo "::warning::No update signing key — this release can only be installed manually."
+            exit 0
+          fi
+          swift scripts/sign-update.swift sign "dist/Gitunia-${{ steps.version.outputs.version }}.dmg"
+
+      - name: Checksum
+        if: steps.exists.outputs.skip != 'true'
+        run: cd dist && shasum -a 256 *.dmg > SHA256SUMS.txt
+
+      # An annotated tag on the released commit, pushed before the release so the release points
+      # at it (`git tag -l`, `git describe` and the GitHub tag list all show every release).
+      # Created only after tests and build pass, so a failed run leaves no tag behind.
+      - name: Tag
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            git tag -a "v$VERSION" -m "Gitunia $VERSION" "$GITHUB_SHA"
+            git push origin "v$VERSION"
+          fi
+
+      - name: Publish release
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          gh release create "v$VERSION" dist/*.dmg dist/*.dmg.sig dist/SHA256SUMS.txt \
+            --verify-tag \
+            --title "Gitunia $VERSION" \
+            --generate-notes \
+            --latest

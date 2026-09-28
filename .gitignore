@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# SwiftPM / Xcode
+.build/
+.swiftpm/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# Build output (app bundle, iconset, DMG) — produced by scripts/
+dist/
+
+# Local tooling state
+.superpowers/
+.claude/
+/docs/

@@ -1,0 +1,24 @@
+name: CI
+
+# Pull requests only: pushes to the default branch run the Release workflow, which tests too.
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test
+        run: swift test
+
+      - name: Build DMG
+        run: UNIVERSAL=1 VERSION="0.0.0-${GITHUB_SHA::7}" scripts/make-dmg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gitunia-dmg
+          path: dist/*.dmg
+          retention-days: 14
