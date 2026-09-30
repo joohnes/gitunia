@@ -45,8 +45,10 @@ struct CommitBox: View {
         return isAmending || repo.repo.hasChanges
     }
 
-    /// Clean tree with unpushed commits: the primary button pushes instead of committing.
-    private var showsPush: Bool { remoteOps != nil && !isAmending && !repo.repo.hasChanges && repo.repo.ahead > 0 }
+    /// Clean tree with unpushed commits: "and Push" pushes on its own.
+    private var pushOnly: Bool { !repo.isBusy && !repo.repo.hasChanges && repo.repo.ahead > 0 }
+    /// Set by "and Push"; `performCommit` pushes after a successful commit. Reset by every `commit(thenPush:)`.
+    @State private var pushAfterCommit = false
 
     @FocusState private var focusedField: Field?
     private enum Field { case title, body }
@@ -118,19 +120,22 @@ struct CommitBox: View {
             HStack {
                 generateButton
                 Spacer()
-                if repo.stagedChanges.isEmpty && !isAmending && repo.repo.hasChanges {
-                    // Nothing staged yet: Commit stages everything first. Shown whole or not at all.
-                    ViewThatFits(in: .horizontal) {
-                        Text("Stages all changes").font(.caption).foregroundStyle(.secondary).fixedSize()
-                        Color.clear.frame(width: 0, height: 0)
+                // Joined pair: Commit, and Commit-then-Push (just Push on a clean tree with unpushed commits).
+                HStack(spacing: 1) {
+                    Button(isAmending ? "Amend" : "Commit") { commit() }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!canCommit)
+                    if remoteOps != nil && !isAmending {
+                        Button("and Push") {
+                            if canCommit { commit(thenPush: true) } else { Task { await remoteOps?.requestPush(on: repo, toasts: toasts) } }
+                        }
+                            .keyboardShortcut(.return, modifiers: [.command, .shift])
+                            .disabled(!canCommit && !pushOnly)
+                            .help(canCommit ? "Commit, then push" : "Push \(repo.repo.ahead) unpushed commit\(repo.repo.ahead == 1 ? "" : "s")")
                     }
                 }
-                Button(showsPush ? "Push ↑\(repo.repo.ahead)" : isAmending ? "Amend" : "Commit") {
-                    if showsPush { Task { await remoteOps?.requestPush(on: repo, toasts: toasts) } } else { commit() }
-                }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(showsPush ? repo.isBusy : !canCommit)
+                .buttonStyle(SegmentButtonStyle())
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
             if let generateError {
                 HStack {
@@ -334,8 +339,9 @@ struct CommitBox: View {
         }
     }
 
-    private func commit() {
+    private func commit(thenPush: Bool = false) {
         guard canCommit else { return }
+        pushAfterCommit = thenPush && !isAmending
         if isAmending {
             let issues = Preflight.check(.amend, repo: repo.repo, hasUpstream: repo.hasUpstream)
             if let blocker = issues.first(where: { $0.severity == .blocker }) {
@@ -413,12 +419,25 @@ struct CommitBox: View {
                 draftBeforeAmend = nil
                 unstrippedAmendBody = nil; keepTrailers = false
                 title = ""; body_ = ""
+                if pushAfterCommit { await remoteOps?.requestPush(on: repo, toasts: toasts) }
             }
+            pushAfterCommit = false
         }
     }
 
     private func stripIfEnabled(_ message: CommitMessage) -> CommitMessage {
         workspace.config.settings.stripAgentTrailers ? TrailerStripper.strip(message) : message
+    }
+}
+
+/// One half of the joined Commit / and Push pair: brand fill, square inner edges (the pair's clip rounds the outside).
+private struct SegmentButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .foregroundStyle(.white)
+            .background(Theme.brand.opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.75 : 1))
     }
 }
 
