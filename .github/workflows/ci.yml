@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Test
-        run: swift test
+        run: swift test --parallel
 
   build:
     name: Build DMG

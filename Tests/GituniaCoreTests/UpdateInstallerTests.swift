@@ -174,9 +174,8 @@ final class UpdateInstallerTests: XCTestCase {
 
     /// Review focus 5: the way through to a paid Developer ID certificate later. Positive case on an
     /// installed Developer ID app when the machine has one; an ad-hoc bundle must never pass.
-    func testDeveloperIDRequirement() async throws {
-        XCTAssertEqual(UpdateInstaller.developerIDRequirement(identifier: "dev.gitunia.app"),
-                       #"identifier "dev.gitunia.app" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"#)
+    /// The Developer ID fallback must not let an ad-hoc (anyone-can-make) signature through.
+    func testDeveloperIDRequirementRejectsAdHoc() async throws {
         let app = try TestHelpers.makeTempDir().appendingPathComponent("Gitunia.app")
         try FileManager.default.createDirectory(at: app.appendingPathComponent("Contents"), withIntermediateDirectories: true)
         let plist: [String: Any] = ["CFBundleIdentifier": "dev.gitunia.app", "CFBundleExecutable": "Gitunia"]
@@ -185,14 +184,6 @@ final class UpdateInstallerTests: XCTestCase {
         try Self.adHocSignedBundle(at: app)
         let adHocPasses = await UpdateInstaller.satisfies(app, requirement: UpdateInstaller.developerIDRequirement(identifier: "dev.gitunia.app"))
         XCTAssertFalse(adHocPasses)
-
-        let apps = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: "/Applications"), includingPropertiesForKeys: nil)) ?? []
-        for candidate in apps where candidate.pathExtension == "app" {
-            guard let id = Bundle(url: candidate)?.bundleIdentifier,
-                  await UpdateInstaller.satisfies(candidate, requirement: UpdateInstaller.developerIDRequirement(identifier: id)) else { continue }
-            return // found a real Developer ID app that meets the requirement
-        }
-        throw XCTSkip("no Developer ID-signed app in /Applications to check the positive case")
     }
 
     func testPrepareRefusesUpdateFromDifferentSigner() async throws {

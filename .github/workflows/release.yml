@@ -53,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Test
-        run: swift test
+        run: swift test --parallel
 
   # Stage 2b: signed universal DMG plus its update signature and checksum.
   build:
