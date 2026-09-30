@@ -19,3 +19,11 @@ final class ModelOutputTests: XCTestCase {
         }
     }
 }
+
+final class ClaudeCLIProviderParseTests: XCTestCase {
+    /// `--json-schema` puts the validated object in `structured_output`; `result` may still be prose.
+    func testPrefersStructuredOutputOverResultText() throws {
+        let envelope = #"{"type":"result","result":"What would you like help with?","structured_output":{"title":" feat: x ","body":"why"}}"#
+        XCTAssertEqual(try ClaudeCLIProvider.parse(Data(envelope.utf8)), CommitMessage(title: "feat: x", body: "why"))
+    }
+}
