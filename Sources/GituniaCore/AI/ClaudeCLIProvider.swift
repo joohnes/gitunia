@@ -12,7 +12,8 @@ public struct ClaudeCLIProvider: CommitMessageProvider {
         let result = try await withTimeout {
             try await ProcessRunner.run(
                 executable: "/usr/bin/env",
-                arguments: ["claude", "-p", "--output-format", "json"],
+                // `haiku` is the CLI alias for the newest Haiku — cheap and plenty for a commit message.
+                arguments: ["claude", "-p", "--model", "haiku", "--output-format", "json"],
                 environment: ["PATH": Self.extraPath + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "")],
                 stdin: prompt
             )
