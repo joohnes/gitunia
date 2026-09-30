@@ -36,6 +36,8 @@ extension WorkspaceStore {
         let result: ProcessResult
         do {
             result = try await run
+            // A cancel that lands just as git exits still means "I don't want this clone".
+            try Task.checkCancellation()
         } catch {
             try? FileManager.default.removeItem(at: dest)
             throw error
