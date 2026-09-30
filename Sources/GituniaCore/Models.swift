@@ -144,23 +144,25 @@ public struct BranchInfo: Identifiable, Hashable, Sendable {
     public let name: String
     public let isCurrent: Bool
     public let isRemote: Bool
+    /// `main`/`master` (or `origin/main` etc.) — pinned first in every branch picker. Stored, not
+    /// computed: pickers ask it of every branch on every pass, and repos can have thousands.
+    public let isDefaultBranch: Bool
     public var id: String { name }
     public init(name: String, isCurrent: Bool, isRemote: Bool) {
         self.name = name; self.isCurrent = isCurrent; self.isRemote = isRemote
-    }
-
-    /// `main`/`master` (or `origin/main` etc.) — pinned above a separator in every branch picker.
-    public var isDefaultBranch: Bool {
-        let short = name.split(separator: "/").last.map(String.init) ?? name
-        return short == "main" || short == "master"
+        let short = name.lastIndex(of: "/").map { name[name.index(after: $0)...] } ?? name[...]
+        self.isDefaultBranch = short == "main" || short == "master"
     }
 }
 
 extension Array where Element == BranchInfo {
     /// Local branches split for pickers: the default branch(es) first, then the rest in git's order.
     public var localPinnedFirst: (pinned: [BranchInfo], rest: [BranchInfo]) {
-        let local = filter { !$0.isRemote }
-        return (local.filter(\.isDefaultBranch), local.filter { !$0.isDefaultBranch })
+        var pinned: [BranchInfo] = [], rest: [BranchInfo] = []
+        for branch in self where !branch.isRemote {
+            if branch.isDefaultBranch { pinned.append(branch) } else { rest.append(branch) }
+        }
+        return (pinned, rest)
     }
 }
 

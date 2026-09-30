@@ -5,8 +5,25 @@ public enum FuzzyMatch {
     /// nil when `query` is not a case-insensitive subsequence of `candidate`.
     public static func score(_ query: String, _ candidate: String) -> Int? {
         if query.isEmpty { return 0 }
+        return score(Query(query), candidate)
+    }
 
-        let q = Array(query.lowercased())
+    /// The query lowercased once — `rank` builds this once instead of per candidate.
+    private struct Query {
+        let chars: [Character]
+        /// The same characters as bytes, when they're all ASCII (nil otherwise).
+        let ascii: [UInt8]?
+        init(_ query: String) {
+            chars = Array(query.lowercased())
+            let bytes = chars.compactMap(\.asciiValue)
+            ascii = bytes.count == chars.count ? bytes : nil
+        }
+    }
+
+    private static func score(_ query: Query, _ candidate: String) -> Int? {
+        if let ascii = query.ascii, !mayMatch(ascii, candidate) { return nil }
+        let q = query.chars
+
         let c = Array(candidate)
         let cLower = Array(candidate.lowercased())
 
@@ -46,10 +63,27 @@ public enum FuzzyMatch {
         return score
     }
 
-    /// Drops non-matches, sorts by score descending; equal scores keep original order.
+    /// Allocation-free subsequence pre-check, so most non-matches among thousands of branch names
+    /// never pay for the three arrays above. Only decides for all-ASCII input, where byte equality
+    /// after ASCII lowercasing is exactly `Character` equality after `lowercased()`; anything else
+    /// answers "maybe" and the full scorer decides — so results are identical either way.
+    private static func mayMatch(_ q: [UInt8], _ candidate: String) -> Bool {
+        var qi = 0
+        for byte in candidate.utf8 {
+            guard byte < 0x80 else { return true }
+            let lower = byte >= 0x41 && byte <= 0x5A ? byte + 0x20 : byte
+            if qi < q.count, lower == q[qi] { qi += 1 }
+        }
+        return qi == q.count
+    }
+
+    /// Drops non-matches, sorts by score descending; equal scores keep original order. An empty
+    /// query matches everything with the same score, so `items` comes back unchanged.
     public static func rank<T>(_ items: [T], query: String, key: (T) -> String) -> [T] {
+        if query.isEmpty { return items }
+        let q = Query(query)
         let scored = items.enumerated().compactMap { index, item -> (Int, Int, T)? in
-            guard let s = score(query, key(item)) else { return nil }
+            guard let s = score(q, key(item)) else { return nil }
             return (s, index, item)
         }
         return scored

@@ -323,31 +323,18 @@ struct HistoryView: View {
 
     /// Local branches first, then remote — default selection (nil) is the current branch. Resets to
     /// the current branch whenever the repository changes (see `onChange(of: repo.id)` above).
+    /// A popover list rather than a `Picker`, which built a menu item per branch on every pass.
     private var branchPicker: some View {
-        Picker("Branch", selection: Binding(
-            get: { selectedBranch ?? repo.repo.branch ?? "" },
-            set: { newValue in selectedBranch = newValue == repo.repo.branch ? nil : newValue }
-        )) {
-            // Detached HEAD matches no branch — without this entry the picker shows blank.
-            if repo.repo.isDetached, let branch = repo.repo.branch {
-                Text(repo.repo.branchLabel).tag(branch)
-            }
-            let local = repo.branches.localPinnedFirst
-            Section("Local") {
-                ForEach(local.pinned) { branch in Text(branch.name).tag(branch.name) }
-                if !local.pinned.isEmpty, !local.rest.isEmpty { Divider() }
-                ForEach(local.rest) { branch in Text(branch.name).tag(branch.name) }
-            }
-            let remotes = repo.branches.filter(\.isRemote)
-            if !remotes.isEmpty {
-                Section("Remote") {
-                    ForEach(remotes) { branch in
-                        Text(branch.name).tag(branch.name)
-                    }
-                }
-            }
-        }
-        .labelsHidden()
+        let current = selectedBranch ?? repo.repo.branch ?? ""
+        // Detached HEAD matches no branch — without this entry the list has nothing checked.
+        let detached = repo.repo.isDetached ? repo.repo.branch.map { [BranchListPopover<EmptyView>.Extra(value: $0, label: repo.repo.branchLabel)] } : nil
+        return BranchPickerButton(
+            title: repo.repo.isDetached && current == repo.repo.branch ? repo.repo.branchLabel : current,
+            branches: repo.branches,
+            selection: current,
+            leading: detached ?? [],
+            onPick: { newValue in selectedBranch = newValue == repo.repo.branch ? nil : newValue }
+        )
         .padding(.horizontal, 10).padding(.vertical, 6)
     }
 

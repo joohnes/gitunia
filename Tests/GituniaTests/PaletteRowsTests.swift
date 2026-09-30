@@ -23,4 +23,17 @@ final class PaletteRowsTests: XCTestCase {
         ]
         XCTAssertEqual(PaletteRows.branchStepEntries(for: .deleteBranch, branches: branches, remotes: []).map(\.name), ["feature"])
     }
+
+    /// Thousands of branches render only `branchStepLimit` rows; the rest are counted, not built.
+    func testBranchStepCapsRowsAndCountsTheRest() {
+        let branches = (0..<250).map { PaletteRows.BranchEntry(id: "b\($0)", name: "b\($0)", isRemote: $0 >= 200) }
+        let all = PaletteRows.buildBranchStep(branches: branches, query: "")
+        XCTAssertEqual(all.rows.count, PaletteRows.branchStepLimit)
+        XCTAssertEqual(all.hidden, 250 - PaletteRows.branchStepLimit)
+        XCTAssertEqual(all.rows.first, .branch(branches[0])) // local before remote, then by name
+        let narrow = PaletteRows.buildBranchStep(branches: branches, query: "b24")
+        XCTAssertEqual(narrow.hidden, 0)
+        XCTAssertEqual(narrow.rows.first?.id, "branch:b24")
+        XCTAssertLessThan(narrow.rows.count, PaletteRows.branchStepLimit)
+    }
 }

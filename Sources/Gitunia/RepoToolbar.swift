@@ -28,9 +28,15 @@ struct RepoToolbarContent: ToolbarContent {
     @Environment(RemoteOpsCoordinator.self) private var remoteOps
     @Environment(RecoveryCoordinator.self) private var recovery: RecoveryCoordinator?
     @Environment(RepoSheets.self) private var repoSheets: RepoSheets?
+    @State private var showBranchPicker = false
+    /// The popover lists remote branches to pick an upstream from instead of switching branches.
+    @State private var pickingUpstream = false
 
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
+            // Click = the searchable branch popover; the menu arrow = the repository-level items.
+            // Branches used to be nested submenus right here — one `NSMenuItem` subtree per branch,
+            // rebuilt on every repository change, which stalled with thousands of branches.
             Menu {
                 if let recovery, repo.repo.isDetached {
                     Section(repo.repo.branchLabel) {
@@ -39,27 +45,7 @@ struct RepoToolbarContent: ToolbarContent {
                         }
                     }
                 }
-                let local = repo.branches.localPinnedFirst
-                Section("Local") {
-                    ForEach(local.pinned) { branch in localBranchRow(branch) }
-                    if !local.pinned.isEmpty, !local.rest.isEmpty { Divider() }
-                    ForEach(local.rest) { branch in localBranchRow(branch) }
-                }
-                let remotes = repo.branches.filter(\.isRemote)
-                if !remotes.isEmpty {
-                    Section("Remote") {
-                        ForEach(remotes) { branch in
-                            Menu {
-                                remoteBranchMenuItems(branch)
-                            } label: {
-                                Text(branch.name)
-                            } primaryAction: {
-                                checkout(branch)
-                            }
-                        }
-                    }
-                }
-                Divider()
+                Button("Switch Branch…", systemImage: "arrow.triangle.branch") { pickingUpstream = false; showBranchPicker = true }
                 Button("New Branch…", systemImage: "plus") { showNewBranch = true }
                 if let recovery {
                     Button("Reflog…", systemImage: "clock.arrow.circlepath") { recovery.showReflog(repo) }
@@ -68,7 +54,7 @@ struct RepoToolbarContent: ToolbarContent {
                 Button("Delete Merged Branches…", systemImage: "arrow.triangle.merge") { repoSheets?.active = .mergedCleanup(repo) }
                 Button("Tidy Commits…", systemImage: "wand.and.stars") { repoSheets?.active = .interactiveRebase(repo) }
                 Divider()
-                UpstreamMenuItems(repo: repo, toasts: toasts)
+                UpstreamMenuItems(repo: repo, toasts: toasts) { pickingUpstream = true; showBranchPicker = true }
                 Button("Remotes…", systemImage: "network") { repoSheets?.active = .remotes(repo) }
                 Button("Git Config…", systemImage: "gearshape.2") { repoSheets?.active = .config(repo) }
                 Button(repo.hasActiveHooks ? "Hooks… (\(repo.activeHookCount) active)" : "Hooks…", systemImage: "bolt") { repoSheets?.active = .hooks(repo) }
@@ -76,6 +62,33 @@ struct RepoToolbarContent: ToolbarContent {
             } label: {
                 Label(repo.repo.branchLabel, systemImage: "arrow.triangle.branch")
                     .labelStyle(.titleAndIcon)
+            } primaryAction: {
+                pickingUpstream = false
+                showBranchPicker = true
+            }
+            .popover(isPresented: $showBranchPicker, arrowEdge: .bottom) {
+                if pickingUpstream {
+                    BranchListPopover(
+                        branches: repo.branches.filter(\.isRemote),
+                        selection: repo.upstreamRemote.flatMap { remote in repo.upstreamBranch.map { "\(remote)/\($0)" } },
+                        onPick: { name in closingBranchPicker { Task { await UpstreamMenuItems.set(name, repo: repo, toasts: toasts) } } }
+                    )
+                } else {
+                    BranchListPopover(
+                        branches: repo.branches,
+                        selection: repo.repo.branch,
+                        selectionIsPickable: false,
+                        onPick: { name in
+                            guard let branch = repo.branches.first(where: { $0.name == name }) else { return }
+                            closingBranchPicker { checkout(branch) }
+                        },
+                        rowMenu: { branch in
+                            Group {
+                                if branch.isRemote { remoteBranchMenuItems(branch) } else { localBranchMenuItems(branch) }
+                            }
+                        }
+                    )
+                }
             }
             .help(repo.unreviewedCount.map { "Switch branch — \($0) unreviewed commit\($0 == 1 ? "" : "s")" } ?? "Switch branch")
             .disabled(repo.isBusy)
@@ -155,48 +168,45 @@ struct RepoToolbarContent: ToolbarContent {
         recovery.guardLeavingDetached(repo) { proceed() }
     }
 
-    // MARK: - Branch submenus
+    // MARK: - Branch popover
 
     private func checkout(_ branch: BranchInfo) {
         leavingDetachedHead { runWithPreflight(.checkout(branch: branch.name)) { _ = await repo.checkout(branch) } }
     }
 
-    /// The current branch's submenu offers Rename only — you can't merge or delete a branch you
-    /// have checked out. Rather than disabling Merge/Delete with an explanatory `.help` (a submenu
-    /// item's tooltip is easy to miss and this is impossible, not merely inadvisable right now),
-    /// they're omitted outright and Checkout stays disabled the way the flat list already did.
-    /// Click = checkout, hover = the per-branch submenu.
-    private func localBranchRow(_ branch: BranchInfo) -> some View {
-        Menu {
-            localBranchMenuItems(branch)
-        } label: {
-            if branch.isCurrent { Label(branch.name, systemImage: "checkmark") } else { Text(branch.name) }
-        } primaryAction: {
-            if !branch.isCurrent { checkout(branch) }
-        }
+    /// Every popover action closes the popover first and acts a runloop turn later, so the dialogs
+    /// `ContentView` presents (preflight, branch verbs, rebase, leaving detached HEAD) never race a
+    /// popover that's still on screen.
+    private func closingBranchPicker(_ action: @escaping @MainActor () -> Void) {
+        showBranchPicker = false
+        DispatchQueue.main.async { action() }
     }
 
+    /// Row context menu. The current branch's offers Rename only — you can't merge or delete a
+    /// branch you have checked out. Rather than disabling Merge/Delete with an explanatory `.help`
+    /// (easy to miss, and this is impossible, not merely inadvisable right now), they're omitted
+    /// outright and Checkout stays disabled the way the flat list already did.
     @ViewBuilder
     private func localBranchMenuItems(_ branch: BranchInfo) -> some View {
         Button("Checkout") {
-            checkout(branch)
+            closingBranchPicker { checkout(branch) }
         }
         .disabled(branch.isCurrent)
 
         if !branch.isCurrent {
             Button("Merge into \(repo.repo.branch ?? "current")") {
-                MergeRunner.run(branch: branch.name, on: repo, toasts: toasts)
+                closingBranchPicker { MergeRunner.run(branch: branch.name, on: repo, toasts: toasts) }
             }
             Button("Rebase \(repo.repo.branch ?? "current") onto \(branch.name)…") {
-                RebaseOntoRunner.request(onto: branch.name, on: repo, toasts: toasts, pending: $pendingRebase)
+                closingBranchPicker { RebaseOntoRunner.request(onto: branch.name, on: repo, toasts: toasts, pending: $pendingRebase) }
             }
         }
 
-        Button("Rename…") { pendingBranchVerb = .rename(branch: branch.name) }
+        Button("Rename…") { closingBranchPicker { pendingBranchVerb = .rename(branch: branch.name) } }
 
         if !branch.isCurrent {
             Button("Delete…", role: .destructive) {
-                pendingBranchVerb = .delete(branch: branch.name, forceRetry: false, refusalMessage: nil)
+                closingBranchPicker { pendingBranchVerb = .delete(branch: branch.name, forceRetry: false, refusalMessage: nil) }
             }
         }
     }
@@ -205,16 +215,16 @@ struct RepoToolbarContent: ToolbarContent {
         let (remote, shortName) = splitRemoteBranchName(branch.name)
         return Group {
             Button("Checkout") {
-                checkout(branch)
+                closingBranchPicker { checkout(branch) }
             }
             Button("Merge into \(repo.repo.branch ?? "current")") {
-                MergeRunner.run(branch: branch.name, on: repo, toasts: toasts)
+                closingBranchPicker { MergeRunner.run(branch: branch.name, on: repo, toasts: toasts) }
             }
             Button("Rebase \(repo.repo.branch ?? "current") onto \(branch.name)…") {
-                RebaseOntoRunner.request(onto: branch.name, on: repo, toasts: toasts, pending: $pendingRebase)
+                closingBranchPicker { RebaseOntoRunner.request(onto: branch.name, on: repo, toasts: toasts, pending: $pendingRebase) }
             }
             Button("Delete on Remote…", role: .destructive) {
-                pendingBranchVerb = .remoteDelete(remote: remote, branch: shortName)
+                closingBranchPicker { pendingBranchVerb = .remoteDelete(remote: remote, branch: shortName) }
             }
         }
     }

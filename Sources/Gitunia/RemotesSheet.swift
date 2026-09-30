@@ -249,29 +249,16 @@ struct RemotesSheet: View {
 struct UpstreamMenuItems: View {
     let repo: RepositoryStore
     let toasts: ToastCenter
+    /// Opens the searchable remote-branch list. Not a submenu of every remote branch: with
+    /// thousands of them that `NSMenu` was rebuilt on every repository change.
+    let chooseUpstream: () -> Void
 
     var body: some View {
-        let remoteBranches = repo.branches.filter(\.isRemote)
-        let groups = Dictionary(grouping: remoteBranches) { RemoteSelection.remote(ofTrackingBranch: $0.name, remotes: repo.remoteNames) }
         let isDetached = repo.repo.branch == nil || repo.repo.branch == "(detached)"
-        Menu("Set Upstream", systemImage: "arrow.up.arrow.down") {
-            if remoteBranches.isEmpty {
-                Text("No remote branches — fetch first")
-            } else if groups.count == 1 {
-                ForEach(remoteBranches) { upstreamButton($0) }
-            } else {
-                ForEach(groups.keys.sorted(), id: \.self) { remote in
-                    Section(remote) { ForEach(groups[remote] ?? []) { upstreamButton($0) } }
-                }
-            }
-        }
-        .disabled(isDetached)
+        Button("Set Upstream…", systemImage: "arrow.up.arrow.down") { chooseUpstream() }
+            .disabled(isDetached || !repo.branches.contains(where: \.isRemote))
         Button("Unset Upstream") { Task { await Self.unset(repo: repo, toasts: toasts) } }
         .disabled(isDetached || !repo.hasUpstream)
-    }
-
-    private func upstreamButton(_ branch: BranchInfo) -> some View {
-        Button(branch.name) { Task { await Self.set(branch.name, repo: repo, toasts: toasts) } }
     }
 
     /// Shared with ⌘K. Failure is toasted by ContentView's generic `lastError` watcher.

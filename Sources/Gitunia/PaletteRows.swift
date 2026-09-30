@@ -223,16 +223,22 @@ enum PaletteRows {
         }
     }
 
-    /// Third step: fuzzy-filtered entries, no "All" row. Local branches sort before remote ones
-    /// so `main` outranks `origin/main`, then alphabetically within each group.
-    static func buildBranchStep(branches: [BranchEntry], query: String) -> [Row] {
-        let sorted = branches.sorted {
-            if $0.isRemote != $1.isRemote { return !$0.isRemote }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-        return FuzzyMatch.rank(sorted.map(Row.branch), query: query) { row in
-            if case .branch(let entry) = row { return entry.name }
-            return ""
-        }
+    /// The third step renders its rows in a plain `VStack` (see `CommandPalette.body`), so with
+    /// thousands of branches only this many are built; the rest wait for a narrower query.
+    static let branchStepLimit = 100
+
+    /// Third step: fuzzy-filtered entries, no "All" row, capped at `branchStepLimit` — `hidden` is
+    /// how many matches were cut. Local branches sort before remote ones so `main` outranks
+    /// `origin/main`, then alphabetically (by a lowercased key computed once, not a localized
+    /// compare per comparison) within each group.
+    static func buildBranchStep(branches: [BranchEntry], query: String) -> (rows: [Row], hidden: Int) {
+        let sorted = branches.map { (key: $0.name.lowercased(), entry: $0) }
+            .sorted {
+                if $0.entry.isRemote != $1.entry.isRemote { return !$0.entry.isRemote }
+                return $0.key < $1.key
+            }
+            .map(\.entry)
+        let ranked = FuzzyMatch.rank(sorted, query: query, key: \.name)
+        return (ranked.prefix(branchStepLimit).map(Row.branch), max(ranked.count - branchStepLimit, 0))
     }
 }

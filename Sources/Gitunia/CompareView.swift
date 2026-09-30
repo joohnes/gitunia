@@ -128,38 +128,26 @@ struct CompareView: View {
         .padding(.horizontal, 10).padding(.vertical, 8)
     }
 
-    /// Local branches first, then remote — same shape as `HistoryView.branchPicker`.
+    /// Local branches first, then remote — same popover list as `HistoryView.branchPicker`. An
+    /// empty selection reads "Choose…" on the button (it was the picker's placeholder row).
     private func branchPicker(_ label: String, selection: Binding<String>) -> some View {
-        Picker(label, selection: selection) {
-            if selection.wrappedValue.isEmpty {
-                Text("Choose…").tag("")
-            }
-            let local = repo.branches.localPinnedFirst
-            Section("Local") {
-                ForEach(local.pinned) { branch in Text(branch.name).tag(branch.name) }
-                if !local.pinned.isEmpty, !local.rest.isEmpty { Divider() }
-                ForEach(local.rest) { branch in Text(branch.name).tag(branch.name) }
-            }
-            let remotes = repo.branches.filter(\.isRemote)
-            if !remotes.isEmpty {
-                Section("Remote") {
-                    ForEach(remotes) { branch in
-                        Text(branch.name).tag(branch.name)
-                    }
-                }
-            }
-            // Session-only: `persistBase` skips these, the pref stays a branch name.
-            if worktrees.count > 1 {
-                Section("Worktrees") {
-                    ForEach(worktrees) { wt in
-                        let isCurrent = wt.path == repo.url.resolvingSymlinksInPath().path
-                        Text(CompareEndpoint.label(for: wt) + (isCurrent ? " (this)" : ""))
-                            .tag(CompareEndpoint.selection(for: wt))
-                    }
-                }
-            }
-        }
-        .labelsHidden()
+        // Session-only: `persistBase` skips these, the pref stays a branch name.
+        let thisPath = repo.url.resolvingSymlinksInPath().path
+        let worktreeRows = worktrees.count > 1 ? worktrees.map { wt in
+            BranchListPopover<EmptyView>.Extra(
+                value: CompareEndpoint.selection(for: wt),
+                label: CompareEndpoint.label(for: wt) + (wt.path == thisPath ? " (this)" : "")
+            )
+        } : []
+        let value = selection.wrappedValue
+        return BranchPickerButton(
+            title: value.isEmpty ? "Choose…" : worktreeRows.first { $0.value == value }?.label ?? value,
+            branches: repo.branches,
+            selection: value,
+            trailing: ("Worktrees", worktreeRows),
+            onPick: { selection.wrappedValue = $0 }
+        )
+        .help(label)
     }
 
     /// A worktree selection's label instead of its `worktree:<path>` tag.

@@ -93,6 +93,25 @@ struct CommandPalette: View {
     @State var pendingUpdateSubmodules: RepositoryStore?
     @State var pullRequestTarget: RepositoryStore?
 
+    /// Arrow keys re-run `body` on every press; re-ranking thousands of branches each time made a
+    /// held arrow key stutter, so the branch step is rebuilt only when its inputs change. A
+    /// reference box so `body` can refresh it without a state write. The top level (actions and
+    /// repositories, a few hundred rows at most) is cheap enough to rebuild every pass.
+    final class BranchStepMemo {
+        struct Key: Equatable {
+            let query: String
+            let action: PaletteRows.TopLevelAction
+            let repo: ObjectIdentifier
+            // Unchanged arrays share storage, which `==` checks first — O(1) on a highlight change.
+            let branches: [BranchInfo]
+            let remotes: [String]
+            let paths: [String]
+        }
+        var key: Key?
+        var value: (rows: [PaletteRows.Row], hidden: Int) = ([], 0)
+    }
+    @State private var branchStepMemo = BranchStepMemo()
+
     struct PendingPushAllTags {
         let store: RepositoryStore
         let tags: [GitTag]
@@ -101,7 +120,7 @@ struct CommandPalette: View {
 
     var body: some View {
         // Built once per body pass; the key handlers below capture this same list.
-        let rows = currentRows
+        let (rows, hiddenCount) = currentRows
         ZStack {
             Color.black.opacity(0.25)
                 .ignoresSafeArea()
@@ -162,6 +181,13 @@ struct CommandPalette: View {
                                             highlighted = index
                                             run(row)
                                         }
+                                }
+                                // Outside `rows`, so highlight and Return never land on it.
+                                if hiddenCount > 0 {
+                                    Text("\(hiddenCount) more — keep typing to narrow")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 18).padding(.vertical, 7)
                                 }
                             }
                         }
@@ -245,23 +271,29 @@ struct CommandPalette: View {
 
     // MARK: - Rows
 
-    /// Live state → plain inputs → `PaletteRows`.
-    private var currentRows: [PaletteRows.Row] {
+    /// Live state → plain inputs → `PaletteRows`. `hidden` counts branch-step matches past the cap.
+    private var currentRows: (rows: [PaletteRows.Row], hidden: Int) {
         if let repo = pendingBranchStepRepo, let pendingAction {
+            let key = BranchStepMemo.Key(query: query, action: pendingAction, repo: ObjectIdentifier(repo),
+                                         branches: repo.branches, remotes: repo.remoteNames, paths: trackedPaths)
+            if branchStepMemo.key == key { return branchStepMemo.value }
             let branches = repo.branches.map { PaletteRows.BranchEntry(id: $0.id, name: $0.name, isRemote: $0.isRemote, isCurrent: $0.isCurrent) }
-            return PaletteRows.buildBranchStep(
+            let value = PaletteRows.buildBranchStep(
                 branches: PaletteRows.branchStepEntries(for: pendingAction, branches: branches, remotes: repo.remoteNames, paths: trackedPaths),
                 query: query
             )
+            branchStepMemo.key = key
+            branchStepMemo.value = value
+            return value
         }
-        return PaletteRows.build(
+        return (PaletteRows.build(
             repositories: workspace.repositories.map {
                 PaletteRows.RepoEntry(id: $0.id.path, name: $0.repo.name, hasSubmodules: !$0.submodules.isEmpty)
             },
             changeFilename: changeFilename,
             pending: pendingAction,
             query: query
-        )
+        ), 0)
     }
 
     /// Last path component only — palette rows are narrow. `currentFilePath` is the mode-aware
