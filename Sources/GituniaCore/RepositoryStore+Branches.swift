@@ -118,6 +118,12 @@ extension RepositoryStore {
         return await perform(["checkout", "-q", branch.name])
     }
 
+    /// What the user typed into a "new branch" field, trimmed, with each run of whitespace turned
+    /// into "-" — "fix login bug" becomes "fix-login-bug" instead of an invalid ref name.
+    nonisolated public static func branchName(fromInput input: String) -> String {
+        input.trimmingCharacters(in: .whitespacesAndNewlines).replacing(/\s+/, with: "-")
+    }
+
     public func createBranch(_ name: String) async -> Bool {
         await perform(["checkout", "-q", "-b", name])
     }

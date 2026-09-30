@@ -4,6 +4,11 @@ import XCTest
 /// T3: merge / rename / delete branch verbs, against real temp repos — same style as
 /// `RemoteOpsTests`/`OperationTests`.
 final class BranchOpsTests: XCTestCase {
+    func testBranchNameFromInputDashesSpaces() {
+        XCTAssertEqual(RepositoryStore.branchName(fromInput: "  fix login  bug\t"), "fix-login-bug")
+        XCTAssertEqual(RepositoryStore.branchName(fromInput: "feat/new thing"), "feat/new-thing")
+    }
+
     // MARK: - Merge
 
     @MainActor

@@ -250,7 +250,7 @@ struct ContentView: View {
         .alert("New branch", isPresented: $showNewBranch) {
             TextField("Branch name", text: $newBranchName)
             Button("Create") {
-                let name = newBranchName.trimmingCharacters(in: .whitespaces)
+                let name = RepositoryStore.branchName(fromInput: newBranchName)
                 newBranchName = ""
                 guard let repo = workspace.selectedRepository, !repo.isBusy, !name.isEmpty else { return }
                 Task { await repo.createBranch(name) }

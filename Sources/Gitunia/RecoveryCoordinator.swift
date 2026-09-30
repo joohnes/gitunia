@@ -168,7 +168,7 @@ final class RecoveryCoordinator {
     }
 
     func performCreateBranch(_ pending: PendingCreateBranch, toasts: ToastCenter) {
-        let name = newBranchName.trimmingCharacters(in: .whitespaces)
+        let name = RepositoryStore.branchName(fromInput: newBranchName)
         pendingCreateBranch = nil
         newBranchName = ""
         guard !name.isEmpty else { return }

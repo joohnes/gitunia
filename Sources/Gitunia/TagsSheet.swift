@@ -261,7 +261,7 @@ struct CommitRefDialogs: ViewModifier {
 
     private func create(checkout: Bool) {
         guard let commit = branchCommit else { return }
-        let name = branchName
+        let name = RepositoryStore.branchName(fromInput: branchName)
         pending = nil
         branchName = ""
         Task {
