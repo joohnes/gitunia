@@ -30,18 +30,30 @@ public enum GitAttributes {
 
     /// Git semantics: the last matching line that mentions `filter` decides.
     public static func isLFSTracked(_ path: String, rules: [AttributeRule]) -> Bool {
-        guard let rule = rules.last(where: { $0.attributes["filter"] != nil && matches($0.pattern, path: path) }) else { return false }
-        return rule.attributes["filter"] == "lfs"
+        LFSMatcher(rules).isTracked(path)
     }
 
     /// `.gitignore`-style glob for a root `.gitattributes`: `*`, `?`, `**/`, `/**`, a leading `/`
     /// anchors, and a pattern without `/` matches the basename at any depth.
-    // ponytail: no `[abc]` classes or `\` escapes, and a regex compiled per call — cache per rule if rows get slow.
+    // ponytail: no `[abc]` classes or `\` escapes.
     public static func matches(_ pattern: String, path: String) -> Bool {
+        compile(pattern)?.matches(path) ?? false
+    }
+
+    /// A compiled glob: the regex plus whether it tests the full path or only the basename.
+    struct Glob {
+        let regex: NSRegularExpression
+        let fullPath: Bool
+        func matches(_ path: String) -> Bool {
+            let subject = fullPath ? path : (path as NSString).lastPathComponent
+            return regex.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)) != nil
+        }
+    }
+
+    static func compile(_ pattern: String) -> Glob? {
         var pat = pattern
         let anchored = pat.hasPrefix("/")
         if anchored { pat.removeFirst() }
-        let subject = (anchored || pat.contains("/")) ? path : (path as NSString).lastPathComponent
         var regex = "^"
         var chars = Substring(pat)
         while let c = chars.first {
@@ -52,6 +64,24 @@ public enum GitAttributes {
             else if c == "?" { regex += "[^/]"; chars = chars.dropFirst() }
             else { regex += NSRegularExpression.escapedPattern(for: String(c)); chars = chars.dropFirst() }
         }
-        return subject.range(of: regex + "$", options: .regularExpression) != nil
+        guard let compiled = try? NSRegularExpression(pattern: regex + "$") else { return nil }
+        return Glob(regex: compiled, fullPath: anchored || pat.contains("/"))
+    }
+}
+
+/// `.gitattributes` `filter` rules compiled once — the Changes list asks per visible row, and
+/// compiling each rule's regex per call dominated scrolling a large LFS repo.
+public struct LFSMatcher {
+    private let rules: [(glob: GitAttributes.Glob, isLFS: Bool)]
+
+    public init(_ rules: [AttributeRule]) {
+        self.rules = rules.compactMap { rule in
+            guard let filter = rule.attributes["filter"], let glob = GitAttributes.compile(rule.pattern) else { return nil }
+            return (glob, filter == "lfs")
+        }
+    }
+
+    public func isTracked(_ path: String) -> Bool {
+        rules.last { $0.glob.matches(path) }?.isLFS ?? false
     }
 }

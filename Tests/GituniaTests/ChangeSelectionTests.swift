@@ -31,6 +31,7 @@ final class ChangeSelectionTests: XCTestCase {
         // `unstagedSamePath` sorts/iterates before `stagedNew` in some Set orderings — reconcile
         // must not pick it just because it's a path match found first.
         let changes = [unstagedSamePath, stagedNew]
-        XCTAssertEqual(ChangeSelection.reconcile(stagedOld, changeSet: Set(changes), changes: changes), stagedNew)
+        let byID = Dictionary(uniqueKeysWithValues: changes.map { ($0.id, $0) })
+        XCTAssertEqual(ChangeSelection.reconcile(stagedOld, byID: byID), stagedNew)
     }
 }

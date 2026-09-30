@@ -52,8 +52,12 @@ extension WorkspaceStore {
         }
         for root in touched {
             pendingRefresh[root]?.cancel()
+            // A repo with thousands of changes is usually mid mass-rewrite (an agent, a codegen
+            // run): each refresh costs a big `git status` plus re-rendering the list, so wait for
+            // a longer quiet period before paying it again.
+            let manyChanges = (repositories.first { $0.url == root }?.repo.changes.count ?? 0) > 1000
             pendingRefresh[root] = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(300))
+                try? await Task.sleep(for: manyChanges ? .seconds(1) : .milliseconds(300))
                 guard !Task.isCancelled, let self, let repo = self.repositories.first(where: { $0.url == root }) else { return }
                 await repo.refreshStatus()
             }

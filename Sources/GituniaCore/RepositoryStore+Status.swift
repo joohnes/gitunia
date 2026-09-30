@@ -54,8 +54,10 @@ extension RepositoryStore {
             async let logOut: String = (try? await git.run(["log", "-2", "--pretty=%x1f%s%x1f%an%x1f%ae"], in: url)) ?? ""
 
             let statusText = try await statusOut
-            let status = StatusParser.parse(statusText)
-            let upstream = StatusParser.upstream(in: statusText)
+            // Off the main actor: thousands of changed files is tens of ms of line parsing.
+            let (status, upstream) = await Task.detached(priority: .userInitiated) {
+                (StatusParser.parse(statusText), StatusParser.upstream(in: statusText))
+            }.value
             let refsResult = await refsOut
             let logRecords = (await logOut).split(separator: "\n", omittingEmptySubsequences: true)
                 .map { $0.dropFirst().split(separator: "\u{1f}", omittingEmptySubsequences: false) }

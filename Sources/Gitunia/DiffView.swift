@@ -158,7 +158,7 @@ struct DiffView: View {
         // current status/area entry in the repo (so an external edit or restage reloads it, but
         // an unrelated file's status change elsewhere in the repo does not), the whole-file
         // toggle, and an explicit reload after a hunk stage/unstage.
-        .task(id: "\(currentChange.hashValue)-\(wholeFile)-\(reloadToken)") {
+        .task(id: "\(currentChange.id)-\(currentChange.status)-\(currentChange.oldPath ?? "")-\(currentChange.size ?? -1)-\(wholeFile)-\(reloadToken)") {
             // Only clear the previously-shown diff when we're actually switching files — not on
             // an in-place reload (hunk staged, scope toggled) — so the view doesn't flash back to
             // a spinner and lose scroll position for a same-file refresh.
@@ -406,7 +406,7 @@ struct DiffView: View {
     /// The repo's current record for this file, falling back to the one we were handed if it has
     /// since disappeared from the list (e.g. right after it was fully staged/discarded).
     private var currentChange: FileChange {
-        repo.repo.changes.first { $0.id == change.id } ?? change
+        repo.changesByID[change.id] ?? change
     }
 
     private func lineActions(for diff: FileDiff) -> DiffLineActions? {

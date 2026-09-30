@@ -4,7 +4,12 @@ import Observation
 @MainActor
 @Observable
 public final class RepositoryStore: Identifiable {
-    public internal(set) var repo: Repository
+    public internal(set) var repo: Repository {
+        // Partitioned once per real change of the list, not on every read: views read these
+        // several times per `body`, and with thousands of changes each read was a full filter.
+        didSet { if repo.changes != oldValue.changes { partition = ChangePartition(repo.changes) } }
+    }
+    private var partition = ChangePartition([])
     public var lastError: GitError?
     public private(set) var isBusy = false
     /// Backing counter for `isBusy` — overlapping operations (e.g. auto-fetch racing a user click)
@@ -64,7 +69,8 @@ public final class RepositoryStore: Identifiable {
     /// Stdout of the last bisect command — the only place git prints "Bisecting: N left".
     @ObservationIgnored var bisectLastOutput = ""
     /// Root `.gitattributes`, re-parsed only when its mtime changes — see `RepositoryStore+LFS`.
-    public internal(set) var attributeRules: [AttributeRule] = []
+    public internal(set) var attributeRules: [AttributeRule] = [] { didSet { lfsMatcher = LFSMatcher(attributeRules) } }
+    public private(set) var lfsMatcher = LFSMatcher([])
     var attributesMTime: Date?
     /// Test seam: a directory prepended to `git lfs`'s PATH, pointing it at a fake `git-lfs` instead
     /// of the real PATH. Nil in the app — see `RepositoryStore+LFS`.
@@ -169,12 +175,14 @@ public final class RepositoryStore: Identifiable {
         }
     }
 
-    public var stagedChanges: [FileChange] { repo.changes.filter { $0.area == .staged } }
+    public var stagedChanges: [FileChange] { partition.staged }
     /// Conflicted files get their own section (see `conflictedChanges`) rather than showing up
     /// here alongside ordinary unstaged edits.
-    public var unstagedChanges: [FileChange] { repo.changes.filter { $0.area == .unstaged && $0.status != .untracked && $0.status != .conflicted } }
-    public var untrackedChanges: [FileChange] { repo.changes.filter { $0.status == .untracked } }
-    public var conflictedChanges: [FileChange] { repo.changes.filter { $0.status == .conflicted } }
+    public var unstagedChanges: [FileChange] { partition.unstaged }
+    public var untrackedChanges: [FileChange] { partition.untracked }
+    public var conflictedChanges: [FileChange] { partition.conflicted }
+    /// `repo.changes` by `FileChange.id` — O(1) lookups for selection reconciliation and the diff pane.
+    public var changesByID: [String: FileChange] { partition.byID }
     /// Stuck mid-operation or holding conflicts — the sidebar's warning icon and "Attention" scope.
     public var needsAttention: Bool { operation != nil || !conflictedChanges.isEmpty }
 
@@ -692,5 +700,23 @@ extension Result {
     var failure: Failure? {
         if case .failure(let e) = self { return e }
         return nil
+    }
+}
+
+/// `repo.changes` split into the Changes list's sections plus an id index, built in one pass.
+struct ChangePartition {
+    var staged: [FileChange] = [], unstaged: [FileChange] = [], untracked: [FileChange] = [], conflicted: [FileChange] = []
+    var byID: [String: FileChange] = [:]
+
+    init(_ changes: [FileChange]) {
+        byID.reserveCapacity(changes.count)
+        for change in changes {
+            byID[change.id] = change
+            // Same predicates as the old per-read filters (not an else-chain), so nothing moves sections.
+            if change.area == .staged { staged.append(change) }
+            if change.area == .unstaged && change.status != .untracked && change.status != .conflicted { unstaged.append(change) }
+            if change.status == .untracked { untracked.append(change) }
+            if change.status == .conflicted { conflicted.append(change) }
+        }
     }
 }

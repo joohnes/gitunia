@@ -7,7 +7,7 @@ public struct Repository: Identifiable, Hashable, Sendable {
     public var branch: String?
     public var ahead: Int
     public var behind: Int
-    public var changes: [FileChange]
+    public var changes: [FileChange] { didSet { changeCount = Self.distinctPaths(changes) } }
     public var lastCommitSummary: String? = nil
     /// HEAD's `%an` / `%ae`, from the same `git log` as `lastCommitSummary`.
     public var lastCommitAuthor: String? = nil
@@ -26,12 +26,15 @@ public struct Repository: Identifiable, Hashable, Sendable {
         self.ahead = ahead
         self.behind = behind
         self.changes = changes
+        self.changeCount = Self.distinctPaths(changes)
         self.tags = tags
         self.localAIOnly = localAIOnly
     }
 
-    /// Number of distinct changed paths (a file staged and unstaged counts once).
-    public var changeCount: Int { Set(changes.map(\.path)).count }
+    /// Number of distinct changed paths (a file staged and unstaged counts once). Stored, kept in
+    /// sync by `changes`' `didSet` — the sidebar reads it for every row on every render.
+    public private(set) var changeCount = 0
+    private static func distinctPaths(_ changes: [FileChange]) -> Int { Set(changes.map(\.path)).count }
     public var hasChanges: Bool { !changes.isEmpty }
     /// HEAD plus the working-tree state, hashed — changes when an agent commits or edits, but not on
     /// fetch (ahead/behind are left out). Drives the sidebar's unseen dot and "Recent activity".
@@ -53,15 +56,21 @@ public struct FileChange: Identifiable, Hashable, Sendable {
     /// modified files only; nil for deleted files, other statuses, or when sizing was skipped.
     public var size: Int?
 
-    public var id: String { "\(area.rawValue):\(path)" }
+    /// Stored rather than interpolated per read: `List`/`ForEach` read it for every row on every diff.
+    public let id: String
 
     public init(path: String, oldPath: String? = nil, status: Status, area: Area, size: Int? = nil) {
+        self.id = "\(area.rawValue):\(path)"
         self.path = path
         self.oldPath = oldPath
         self.status = status
         self.area = area
         self.size = size
     }
+
+    /// Hashes the id only (it's derived from `area` + `path`, so still consistent with the
+    /// synthesized `==`): `List` selection sets hash every row, and the full struct is five strings.
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
 
     public var isImage: Bool {
         let kind = PreviewKind.kind(for: path)

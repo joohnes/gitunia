@@ -23,10 +23,12 @@ enum ChangeSelection {
     /// refresh. An exact match survives; a path still in the same `area` (status changed) is
     /// followed there; only as a last resort any area for that path — a file with staged and
     /// unstaged hunks is two `FileChange`s sharing a path. `nil` when the path is gone entirely.
-    static func reconcile(_ member: FileChange, changeSet: Set<FileChange>, changes: [FileChange]) -> FileChange? {
-        if changeSet.contains(member) { return member }
-        return changes.first { $0.path == member.path && $0.area == member.area }
-            ?? changes.first { $0.path == member.path }
+    /// `byID` is `RepositoryStore.changesByID` — dictionary lookups, so reconciling a select-all of
+    /// thousands of files stays linear instead of scanning `changes` per member.
+    static func reconcile(_ member: FileChange, byID: [String: FileChange]) -> FileChange? {
+        if let same = byID[member.id] { return same }
+        // Any area for that path; staged first, matching the order `StatusParser` emits them in.
+        return byID["\(FileChange.Area.staged.rawValue):\(member.path)"] ?? byID["\(FileChange.Area.unstaged.rawValue):\(member.path)"]
     }
 
     struct BulkTargets {
@@ -75,6 +77,9 @@ struct ChangesView: View {
     /// position). Absence means expanded. Session-only — it has to survive FSEvents rebuilds,
     /// not app launches.
     @State private var collapsedDirectories: Set<String> = []
+    /// Last built tree per section: rebuilding (trie + locale-aware sort) on every `body` was the
+    /// tree mode's main cost with thousands of changes, and most renders don't change the input.
+    @State private var treeCache = TreeCache()
 
     /// The List's own selection binding. Every user-driven selection change (click, cmd-click,
     /// shift-range, arrow keys) flows through here exactly once, so `selection` and the focused
@@ -198,19 +203,19 @@ struct ChangesView: View {
             pendingDiscard = []
             selection = selectedChange.map { [$0] } ?? []
         }
-        .onChange(of: repo.repo.changes) { _, changes in
-            let changeSet = Set(changes)
+        .onChange(of: repo.repo.changes) {
+            let byID = repo.changesByID
             // Reconcile the whole selection the same way the single-file logic below already
             // does: a member whose exact (path, area) still exists survives untouched; a member
             // whose path moved to another area is followed; a member that's gone entirely (staged
             // and committed, discarded, …) is dropped. Written straight to the `@State` var, not
             // through `listSelection`, so this never gets read as a user click stealing focus.
-            let reconciled = Set(selection.compactMap { ChangeSelection.reconcile($0, changeSet: changeSet, changes: changes) })
+            let reconciled = Set(selection.compactMap { ChangeSelection.reconcile($0, byID: byID) })
             if reconciled != selection { selection = reconciled }
             guard let current = selectedChange else { return }
-            if changeSet.contains(current) { return }
+            if byID[current.id] == current { return }
             // Same path moved to another area (stage/unstage) → follow it; otherwise deselect.
-            selectedChange = ChangeSelection.reconcile(current, changeSet: changeSet, changes: changes)
+            selectedChange = ChangeSelection.reconcile(current, byID: byID)
         }
         .onChange(of: selectedChange) { _, newValue in
             // Reflects an *externally*-driven focus change (ContentView's restoreSelection on
@@ -237,7 +242,7 @@ struct ChangesView: View {
     }
 
     private func filtered(_ changes: [FileChange]) -> [FileChange] {
-        FuzzyMatch.rank(changes, query: filterText, key: \.path)
+        filterText.isEmpty ? changes : FuzzyMatch.rank(changes, query: filterText, key: \.path)
     }
 
     /// The four sections after the filter, computed once per `body`.
@@ -284,9 +289,9 @@ struct ChangesView: View {
     @ViewBuilder
     private func section(_ title: String, _ changes: [FileChange]) -> some View {
         if !changes.isEmpty {
-            let lockfiles = changes.filter { ChangeClassification.isLockfile($0.path) }
+            let (lockfiles, files) = Self.splitLockfiles(changes)
             Section("\(title) (\(changes.count))") {
-                ForEach(changes.filter { !ChangeClassification.isLockfile($0.path) }) { flatRow($0) }
+                ForEach(files) { flatRow($0) }
                 if !lockfiles.isEmpty {
                     // Collapsed by default, so the synthetic key's *presence* in
                     // `collapsedDirectories` means expanded — the inverse of a directory's.
@@ -302,8 +307,18 @@ struct ChangesView: View {
         }
     }
 
+    /// One pass instead of a filter and its inverse per section per `body`.
+    private static func splitLockfiles(_ changes: [FileChange]) -> (lockfiles: [FileChange], rest: [FileChange]) {
+        var lockfiles: [FileChange] = [], rest: [FileChange] = []
+        rest.reserveCapacity(changes.count)
+        for change in changes {
+            if ChangeClassification.isLockfile(change.path) { lockfiles.append(change) } else { rest.append(change) }
+        }
+        return (lockfiles, rest)
+    }
+
     private func flatRow(_ change: FileChange) -> some View {
-        ChangeRow(change: change, isLFS: GitAttributes.isLFSTracked(change.path, rules: repo.attributeRules))
+        ChangeRow(change: change, isLFS: repo.lfsMatcher.isTracked(change.path))
             .tag(change)
             .contextMenu { menu(for: change) }
     }
@@ -376,7 +391,7 @@ struct ChangesView: View {
             Section("\(title) (\(changes.count))") {
                 // Salted with the section title, not `FileChange.area` — untracked files carry
                 // `area == .unstaged` too, which would couple their directories' expand state.
-                let tree = FileTree.build(from: changes, path: \.path, salt: title)
+                let tree = treeCache.tree(for: changes, salt: title)
                 ForEach(FileTree.flatten(tree, collapsed: collapsedDirectories)) { row in
                     treeRow(row)
                 }
@@ -391,7 +406,7 @@ struct ChangesView: View {
     @ViewBuilder
     private func treeRow(_ row: FileTreeRow<FileChange>) -> some View {
         let rowView = FileTreeRowView(row: row, onToggle: toggleCollapsed) { change, _ in
-            ChangeRow(change: change, showsPath: false, isLFS: GitAttributes.isLFSTracked(change.path, rules: repo.attributeRules))
+            ChangeRow(change: change, showsPath: false, isLFS: repo.lfsMatcher.isTracked(change.path))
         }
         switch row.kind {
         case .directory(_, let path, _):
@@ -493,5 +508,18 @@ struct ChangesView: View {
             }
             toasts.post(.info(repo.repo.name, detail: detail))
         }
+    }
+}
+
+/// Memo for `ChangesView.treeSection`, keyed by section title. A plain class held in `@State`, so
+/// filling it during `body` doesn't invalidate the view.
+private final class TreeCache {
+    private var entries: [String: (changes: [FileChange], tree: [FileTreeNode<FileChange>])] = [:]
+
+    func tree(for changes: [FileChange], salt: String) -> [FileTreeNode<FileChange>] {
+        if let entry = entries[salt], entry.changes == changes { return entry.tree }
+        let tree = FileTree.build(from: changes, path: \.path, salt: salt)
+        entries[salt] = (changes, tree)
+        return tree
     }
 }
