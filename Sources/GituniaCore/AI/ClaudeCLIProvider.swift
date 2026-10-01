@@ -19,6 +19,9 @@ public struct ClaudeCLIProvider: CommitMessageProvider {
         // text task, not an agent session poking around the repository.
         "--system-prompt", PromptBuilder.instructions, "--tools", "",
         "--json-schema", schema, "--no-session-persistence", "--output-format", "json",
+        // Skip the user's ~/.claude setup (hooks, plugins, MCP servers, skills): loading it
+        // roughly doubled the call. Not `--bare` — that drops OAuth, i.e. subscription logins.
+        "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands",
     ]
 
     public func generate(prompt: String) async throws -> CommitMessage {
