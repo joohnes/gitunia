@@ -107,23 +107,23 @@ struct ContentActionRow: View {
         .disabled(repo.isBusy || !repo.hasParentCommit)
     }
 
-    /// Plain `git add -A` normally, but a per-file loop whenever a conflict is present —
+    /// Plain `git add -A` normally, but explicit paths whenever a conflict is present —
     /// `git add -A` would silently mark a conflicted path resolved.
     private func stageAll() async {
         if repo.conflictedChanges.isEmpty {
             await repo.stageAll()
         } else {
-            for change in repo.unstagedChanges + repo.untrackedChanges { await repo.stage(change) }
+            await repo.stage(repo.unstagedChanges + repo.untrackedChanges)
         }
     }
 
     /// Same trade in the other direction: a bare `git reset -q` touches the whole index, so any
-    /// conflict means a per-file loop rather than risk disturbing its unmerged entries.
+    /// conflict means explicit paths rather than risk disturbing its unmerged entries.
     private func unstageAll() async {
         if repo.conflictedChanges.isEmpty {
             await repo.unstageAll()
         } else {
-            for change in repo.stagedChanges { await repo.unstage(change) }
+            await repo.unstage(repo.stagedChanges)
         }
     }
 }

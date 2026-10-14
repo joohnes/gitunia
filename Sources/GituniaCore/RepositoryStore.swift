@@ -260,12 +260,23 @@ public final class RepositoryStore: Identifiable {
 
     // MARK: - Actions
 
-    public func stage(_ change: FileChange) async {
-        await perform(["add", "-A", "--", change.path], literalPathspecs: true)
+    public func stage(_ change: FileChange) async { await stage([change]) }
+    public func unstage(_ change: FileChange) async { await unstage([change]) }
+
+    /// One `git add` for the whole batch (paths NUL-separated on stdin, so no ARG_MAX ceiling)
+    /// and one status refresh — a per-file loop was one process + refresh per file.
+    /// Empty input returns early: an empty pathspec file with `-A` would stage everything.
+    public func stage(_ changes: [FileChange]) async {
+        guard !changes.isEmpty else { return }
+        await perform(["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                      stdin: changes.map(\.path).joined(separator: "\0"), literalPathspecs: true)
     }
 
-    public func unstage(_ change: FileChange) async {
-        await perform(["reset", "-q", "--", change.path], literalPathspecs: true)
+    /// Batch counterpart of `stage(_:)`; empty input would reset the whole index, hence the guard.
+    public func unstage(_ changes: [FileChange]) async {
+        guard !changes.isEmpty else { return }
+        await perform(["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                      stdin: changes.map(\.path).joined(separator: "\0"), literalPathspecs: true)
     }
 
     public func stageAll() async {
@@ -275,7 +286,7 @@ public final class RepositoryStore: Identifiable {
     /// `git reset -q`: unstages everything in one shot, mirroring `stageAll()`. A repo with
     /// unresolved conflicts should not call this directly — conflicted files are never staged
     /// (see `stagedChanges`), but resetting the whole index can still disturb their unmerged
-    /// entries, so callers with conflicts present should loop `unstage(_:)` over `stagedChanges`
+    /// entries, so callers with conflicts present should pass `stagedChanges` to `unstage(_:)`
     /// instead, the same fallback `stageAll()`'s callers already use.
     public func unstageAll() async {
         await perform(["reset", "-q"])

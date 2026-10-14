@@ -9,24 +9,19 @@ struct CommitBox: View {
     @Environment(ToastCenter.self) private var toasts
     // Optional: render tests host the box without it (same convention as `RepoSheets`).
     @Environment(RemoteOpsCoordinator.self) private var remoteOps: RemoteOpsCoordinator?
-    @State private var title = ""
-    @State private var body_ = ""
-    @State private var isGenerating = false
-    @State private var generateError: String?
-    @State private var generateTask: Task<Void, Never>?
     @State private var isCommitting = false
     @State private var isAmending = false
-    /// What the user had typed before switching the amend toggle on, restored when it's switched
-    /// back off. Lives here (not in the persisted per-repo draft) because the amend fields aren't
-    /// a draft for the *next* commit — they're a reword of the *last* one.
-    @State private var draftBeforeAmend: CommitMessage?
+    /// The amend fields: a reword of the *last* commit, not a draft for the next one, so they live
+    /// here rather than in the per-repo composer — the draft is simply shown again when amend ends.
+    /// Which repo `isAmending` is about — a generation finishing after a switch must not fill
+    /// another repo's amend fields.
+    @State private var amendingRepo: URL?
+    @State private var amendTitle = ""
+    @State private var amendBody = ""
     @State private var amendFetchTask: Task<Void, Never>?
     /// The commit being amended as the user saw it; `commit(amend:)` refuses if HEAD moved off it.
     @State private var amendHead: String?
     @State private var pendingAmendWarning: PreflightIssue?
-    /// Set when a scan of the staged diff turned up something secret-shaped and we're waiting on
-    /// the user to confirm sending it to a cloud provider anyway.
-    @State private var pendingSecretWarning: (labels: [String], files: [String], provider: any CommitMessageProvider, prompt: String)?
     /// Set when the staged diff about to be committed has secret-shaped added lines — an agent may
     /// have staged a key the human never looked at — or staged files over the large-file threshold.
     /// One line per finding; secrets carry only path + label, never the matched value.
@@ -39,6 +34,14 @@ struct CommitBox: View {
     @State private var unstrippedAmendBody: String?
     /// The user pressed that Undo — commit this amend with its trailers intact.
     @State private var keepTrailers = false
+
+    /// This repo's draft and generation state. Per repo, not `@State`: the box is reused across repo
+    /// switches, and a generation started in one repo must land there, not in whichever is shown.
+    private var composer: CommitComposer { CommitComposer.for(repo, in: workspace) }
+    private var title: String { isAmending ? amendTitle : composer.title }
+    private var body_: String { isAmending ? amendBody : composer.body }
+    private var titleBinding: Binding<String> { isAmending ? $amendTitle : Bindable(composer).title }
+    private var bodyBinding: Binding<String> { isAmending ? $amendBody : Bindable(composer).body }
 
     private var canCommit: Bool {
         guard !title.trimmingCharacters(in: .whitespaces).isEmpty, !repo.isBusy, !isCommitting, repo.operation == nil else { return false }
@@ -75,7 +78,7 @@ struct CommitBox: View {
                 .disabled(repo.isBusy || isCommitting)
                 .font(.caption)
             // Both fields share one look: same rounded frame, brand stroke on the focused one.
-            TextField("", text: $title)
+            TextField("", text: titleBinding)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .padding(.horizontal, 6).padding(.vertical, 5)
@@ -90,7 +93,7 @@ struct CommitBox: View {
                     }
                 }
                 .onSubmit { commit() }
-            TextEditor(text: $body_)
+            TextEditor(text: bodyBinding)
                 .font(.body)
                 .frame(minHeight: 60, maxHeight: 120)
                 .focused($focusedField, equals: .body)
@@ -105,7 +108,7 @@ struct CommitBox: View {
                 let n = TrailerStripper.findings(in: original).count
                 HStack(spacing: 4) {
                     Text("Removed \(n) agent trailer\(n == 1 ? "" : "s")").foregroundStyle(.secondary)
-                    Button("Undo") { body_ = original; unstrippedAmendBody = nil; keepTrailers = true }.buttonStyle(.link)
+                    Button("Undo") { amendBody = original; unstrippedAmendBody = nil; keepTrailers = true }.buttonStyle(.link)
                 }
                 .font(.caption)
             }
@@ -137,7 +140,7 @@ struct CommitBox: View {
                 .buttonStyle(SegmentButtonStyle())
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            if let generateError {
+            if let generateError = composer.generateError {
                 HStack {
                     Text(generateError).font(.caption).foregroundStyle(Theme.status(.deleted)).textSelection(.enabled)
                     Button("Copy") {
@@ -148,10 +151,8 @@ struct CommitBox: View {
                 }
             }
         }
-        .onAppear { seedDraft(); if amendOnAppear { setAmending(true) } }
-        .onChange(of: repo.id) { seedDraft() }
-        .onChange(of: title) { if !isAmending { workspace.setCommitDraft(CommitMessage(title: title, body: body_), for: repo) } }
-        .onChange(of: body_) { if !isAmending { workspace.setCommitDraft(CommitMessage(title: title, body: body_), for: repo) } }
+        .onAppear { if amendOnAppear { setAmending(true) } }
+        .onChange(of: repo.id) { endAmend() }
         .confirmationDialog(
             "Proceed anyway?",
             isPresented: Binding(get: { pendingAmendWarning != nil }, set: { if !$0 { pendingAmendWarning = nil } }),
@@ -167,20 +168,22 @@ struct CommitBox: View {
         }
         .confirmationDialog(
             "Send this diff to a cloud AI provider?",
-            isPresented: Binding(get: { pendingSecretWarning != nil }, set: { if !$0 { pendingSecretWarning = nil } }),
+            isPresented: Binding(get: { composer.pendingSecretWarning != nil }, set: { if !$0 { composer.pendingSecretWarning = nil } }),
             titleVisibility: .visible
         ) {
             Button("Send Anyway", role: .destructive) {
-                if let pending = pendingSecretWarning {
-                    pendingSecretWarning = nil
-                    isGenerating = true
-                    generateTask = Task { await runGenerate(with: pending.provider, prompt: pending.prompt) }
+                if let pending = composer.pendingSecretWarning {
+                    let composer = composer
+                    composer.pendingSecretWarning = nil
+                    composer.isGenerating = true
+                    composer.generateTask = Task { await runGenerate(with: pending.provider, prompt: pending.prompt, into: composer) }
                 }
             }
-            Button("Cancel", role: .cancel) { pendingSecretWarning = nil }
+            Button("Cancel", role: .cancel) { composer.pendingSecretWarning = nil }
         } message: {
-            let files = pendingSecretWarning?.files ?? []
-            Text("The staged changes look like they contain \(pendingSecretWarning?.labels.joined(separator: ", ") ?? ""). It will be sent to \(pendingSecretWarning?.provider.name ?? "the cloud provider") to generate a commit message."
+            let pending = composer.pendingSecretWarning
+            let files = pending?.files ?? []
+            Text("The staged changes look like they contain \(pending?.labels.joined(separator: ", ") ?? ""). It will be sent to \(pending?.provider.name ?? "the cloud provider") to generate a commit message."
                  + (files.isEmpty ? "" : "\n\n" + files.joined(separator: "\n")))
         }
         .confirmationDialog(
@@ -217,20 +220,12 @@ struct CommitBox: View {
         }
     }
 
-    /// Seeds the fields from the repo's restored draft. Called on first appearance and whenever
-    /// the underlying repo identity changes (the view itself is reused across repo switches, so
-    /// `onChange(of: repo.id)` alone would miss the very first repo — hence also `onAppear`).
-    /// Also resets the amend toggle — it's a per-glance decision about *this* repo's HEAD, not
-    /// something that should follow you to the next repo you look at.
-    private func seedDraft() {
+    /// Amend is a per-glance decision about *this* repo's HEAD, so a repo switch ends it.
+    private func endAmend() {
         amendFetchTask?.cancel()
         isAmending = false
-        draftBeforeAmend = nil
+        amendingRepo = nil
         unstrippedAmendBody = nil; keepTrailers = false
-        let draft = repo.restoredDraft
-        title = draft?.title ?? ""
-        body_ = draft?.body ?? ""
-        generateError = nil
     }
 
     private func setAmending(_ on: Bool) {
@@ -241,24 +236,20 @@ struct CommitBox: View {
                 toasts.post(.error(repo.repo.name, detail: blocker.message))
                 return
             }
-            draftBeforeAmend = CommitMessage(title: title, body: body_)
+            amendTitle = ""; amendBody = ""
             isAmending = true
+            amendingRepo = repo.url
             amendHead = repo.repo.headOID
             amendFetchTask = Task {
                 guard let (hash, last) = await repo.lastCommit(), !Task.isCancelled else { return }
                 amendHead = hash
                 let seeded = stripIfEnabled(last)
-                title = seeded.title
-                body_ = seeded.body
+                amendTitle = seeded.title
+                amendBody = seeded.body
                 unstrippedAmendBody = seeded.body == last.body ? nil : last.body
             }
         } else {
-            amendFetchTask?.cancel()
-            isAmending = false
-            unstrippedAmendBody = nil; keepTrailers = false
-            title = draftBeforeAmend?.title ?? ""
-            body_ = draftBeforeAmend?.body ?? ""
-            draftBeforeAmend = nil
+            endAmend()
         }
     }
 
@@ -266,8 +257,8 @@ struct CommitBox: View {
     private var generateButton: some View {
         let provider = AIProviderFactory.make(workspace.config.settings)
         let blocked = repo.repo.localAIOnly && !provider.isLocal
-        if isGenerating {
-            Button("Cancel") { generateTask?.cancel() }
+        if composer.isGenerating {
+            Button("Cancel") { composer.generateTask?.cancel() }
             ProgressView().controlSize(.small)
         } else {
             let stagesFirst = repo.stagedChanges.isEmpty
@@ -292,17 +283,19 @@ struct CommitBox: View {
     }
 
     private func generate(with provider: any CommitMessageProvider) {
-        generateError = nil
-        isGenerating = true
-        generateTask = Task {
+        // Captured once: everything below writes to the repo it was started in.
+        let composer = composer
+        composer.generateError = nil
+        composer.isGenerating = true
+        composer.generateTask = Task {
             if repo.repo.localAIOnly && !provider.isLocal {
-                generateError = AIError.localOnlyRepo(providerName: provider.name).localizedDescription
-                isGenerating = false
+                composer.generateError = AIError.localOnlyRepo(providerName: provider.name).localizedDescription
+                composer.isGenerating = false
                 return
             }
             if repo.stagedChanges.isEmpty { await repo.stageAll() }
             let (stat, diff) = await repo.stagedDiffForAI()
-            guard !diff.isEmpty else { generateError = "Nothing staged to describe."; isGenerating = false; return }
+            guard !diff.isEmpty else { composer.generateError = "Nothing staged to describe."; composer.isGenerating = false; return }
             let prompt = PromptBuilder.build(stat: stat, diff: diff, limit: workspace.config.settings.diffCharLimit)
             // Cloud providers see the raw diff; repos not restricted to Local AI still deserve a
             // heads-up before something secret-shaped leaves the machine. `localAIOnly` repos
@@ -315,27 +308,31 @@ struct CommitBox: View {
                 let shown = repo.withoutIgnoredSecrets(all)
                 let labels = all.isEmpty ? SecretScanner.scan(diff) : Array(Set(shown.map(\.label))).sorted()
                 if !labels.isEmpty {
-                    isGenerating = false
-                    pendingSecretWarning = (labels, shown.map { "\($0.path): \($0.label)" }, provider, prompt)
+                    composer.isGenerating = false
+                    composer.pendingSecretWarning = (labels, shown.map { "\($0.path): \($0.label)" }, provider, prompt)
                     return
                 }
             }
-            await runGenerate(with: provider, prompt: prompt)
+            await runGenerate(with: provider, prompt: prompt, into: composer)
         }
     }
 
     /// Sends `prompt` to `provider` and fills in the title/body. Called directly from `generate`,
     /// or after the user confirms sending a secret-shaped diff to a cloud provider.
-    private func runGenerate(with provider: any CommitMessageProvider, prompt: String) async {
-        defer { isGenerating = false }
+    private func runGenerate(with provider: any CommitMessageProvider, prompt: String, into composer: CommitComposer) async {
+        defer { composer.isGenerating = false }
         do {
             let message = stripIfEnabled(try await provider.generate(prompt: prompt))
             guard !Task.isCancelled else { return }
-            title = message.title
-            body_ = message.body
+            // Still amending this same repo → it rewords the commit; otherwise it's the next commit's draft.
+            if isAmending && amendingRepo == repo.url {
+                amendTitle = message.title; amendBody = message.body
+            } else {
+                composer.title = message.title; composer.body = message.body
+            }
         } catch is CancellationError {
         } catch {
-            generateError = error.localizedDescription
+            composer.generateError = error.localizedDescription
         }
     }
 
@@ -370,7 +367,7 @@ struct CommitBox: View {
                 if repo.conflictedChanges.isEmpty {
                     await repo.stageAll()
                 } else {
-                    for change in repo.unstagedChanges + repo.untrackedChanges { await repo.stage(change) }
+                    await repo.stage(repo.unstagedChanges + repo.untrackedChanges)
                 }
                 guard !repo.stagedChanges.isEmpty else { isCommitting = false; return }
             }
@@ -409,16 +406,14 @@ struct CommitBox: View {
     private func performCommit() {
         isCommitting = true
         let amend = isAmending
+        let composer = composer
         Task {
             defer { isCommitting = false }
             let message = CommitMessage(title: title.trimmingCharacters(in: .whitespaces), body: body_)
             let ok = await repo.commit(keepTrailers ? message : stripIfEnabled(message), amend: amend,
                                        expectedHead: amend ? amendHead : nil)
             if ok {
-                isAmending = false
-                draftBeforeAmend = nil
-                unstrippedAmendBody = nil; keepTrailers = false
-                title = ""; body_ = ""
+                if amend { endAmend() } else { composer.title = ""; composer.body = "" }
                 if pushAfterCommit { await remoteOps?.requestPush(on: repo, toasts: toasts) }
             }
             pushAfterCommit = false
@@ -448,5 +443,49 @@ private struct CommitFieldFrame: ViewModifier {
         content
             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(focused ? Theme.brand : Color.secondary.opacity(0.3), lineWidth: focused ? 1.5 : 1))
+    }
+}
+
+/// One repo's commit draft and AI-generation state, outliving any one `CommitBox` render so that
+/// switching repos neither carries text across nor drops a generation that's still running.
+/// Edits are persisted through `WorkspaceStore.setCommitDraft` (debounced to disk there).
+@MainActor @Observable
+final class CommitComposer {
+    var title: String { didSet { persist() } }
+    var body: String { didSet { persist() } }
+    var isGenerating = false
+    var generateError: String?
+    @ObservationIgnored var generateTask: Task<Void, Never>?
+    /// Set when the staged diff looked secret-shaped and we're waiting on the user to confirm
+    /// sending it to a cloud provider anyway.
+    var pendingSecretWarning: (labels: [String], files: [String], provider: any CommitMessageProvider, prompt: String)?
+
+    @ObservationIgnored private weak var workspace: WorkspaceStore?
+    @ObservationIgnored private weak var repo: RepositoryStore?
+
+    private init(repo: RepositoryStore, workspace: WorkspaceStore) {
+        title = repo.restoredDraft?.title ?? ""
+        body = repo.restoredDraft?.body ?? ""
+        self.repo = repo
+        self.workspace = workspace
+    }
+
+    private func persist() {
+        guard let repo, let workspace else { return }
+        workspace.setCommitDraft(CommitMessage(title: title, body: body), for: repo)
+    }
+
+    // ponytail: never evicted — one small object per repo ever shown; prune on repo removal if that grows.
+    private static var all: [URL: CommitComposer] = [:]
+
+    /// Keyed by URL so a rebuilt `RepositoryStore` for the same repo keeps its draft and running generation.
+    static func `for`(_ repo: RepositoryStore, in workspace: WorkspaceStore) -> CommitComposer {
+        if let existing = all[repo.url] {
+            existing.repo = repo; existing.workspace = workspace
+            return existing
+        }
+        let made = CommitComposer(repo: repo, workspace: workspace)
+        all[repo.url] = made
+        return made
     }
 }

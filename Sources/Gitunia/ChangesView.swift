@@ -135,20 +135,21 @@ struct ChangesView: View {
             //
             // `.focusable(!isPaletteOpen)` keeps the List from becoming first responder under the
             // palette; the `isPaletteOpen` guards stop "s"/"u" even if it somehow did.
+            .contextMenu(forSelectionType: FileChange.self) { listMenu(for: $0) }
             .focused($listFocused)
             .focusable(!isPaletteOpen)
             .onKeyPress("s") {
                 guard !isPaletteOpen else { return .ignored }
                 let targets = ChangeSelection.bulkTargets(for: visibleSelection).toStage
                 guard !targets.isEmpty else { return .ignored }
-                Task { for change in targets { await repo.stage(change) } }
+                Task { await repo.stage(targets) }
                 return .handled
             }
             .onKeyPress("u") {
                 guard !isPaletteOpen else { return .ignored }
                 let targets = ChangeSelection.bulkTargets(for: visibleSelection).toUnstage
                 guard !targets.isEmpty else { return .ignored }
-                Task { for change in targets { await repo.unstage(change) } }
+                Task { await repo.unstage(targets) }
                 return .handled
             }
             // Same Quick Look toggle as Finder — the working-tree copy of whichever file is
@@ -320,7 +321,6 @@ struct ChangesView: View {
     private func flatRow(_ change: FileChange) -> some View {
         ChangeRow(change: change, isLFS: repo.lfsMatcher.isTracked(change.path))
             .tag(change)
-            .contextMenu { menu(for: change) }
     }
 
     /// Pinned above Staged/Changes/Untracked whenever any file is conflicted, regardless of tree
@@ -356,7 +356,6 @@ struct ChangesView: View {
                         Task { await repo.useTheirs(change) }
                     }
                     .tag(change)
-                    .contextMenu { conflictMenu(for: change) }
                 }
             }
         }
@@ -403,47 +402,47 @@ struct ChangesView: View {
     /// rows are selectable, exactly as in flat mode. `List` sees a flat `ForEach` over
     /// pre-flattened rows (`FileTree.flatten`), so no nested `DisclosureGroup` can desynchronise
     /// row geometry on collapse.
-    @ViewBuilder
     private func treeRow(_ row: FileTreeRow<FileChange>) -> some View {
-        let rowView = FileTreeRowView(row: row, onToggle: toggleCollapsed) { change, _ in
-            ChangeRow(change: change, showsPath: false, isLFS: repo.lfsMatcher.isTracked(change.path))
-        }
-        switch row.kind {
-        case .directory(_, let path, _):
-            rowView
-                .contextMenu {
-                Button("Ignore This Folder", systemImage: "eye.slash") {
-                    addToGitignore(GitignorePattern.folder(path), tracked: false)
-                }
-                Button("Remove Folder from Git…", systemImage: "minus.circle") {
-                    repoSheets?.active = .removeFromGit(repo, [path + "/"])
-                }
-            }
-        case .file(let change, _):
-            rowView
-                .tag(change)
-                .contextMenu { menu(for: change) }
-        }
+        TreeChangeRow(row: row, isLFS: row.directoryPath == nil && repo.lfsMatcher.isTracked(row.selectionTag.path),
+                      onToggle: toggleCollapsed,
+                      onIgnoreFolder: { addToGitignore(GitignorePattern.folder($0), tracked: false) },
+                      onRemoveFolder: { repoSheets?.active = .removeFromGit(repo, [$0 + "/"]) })
+            .equatable()
+            .tag(row.selectionTag)
+            .selectionDisabled(row.directoryPath != nil)
     }
 
     private func toggleCollapsed(_ id: String) {
         if !collapsedDirectories.insert(id).inserted { collapsedDirectories.remove(id) }
     }
 
-    /// Right-clicking a row that's part of the current multi-selection acts on the whole
-    /// selection (Finder's convention); right-clicking a row outside it acts on just that row.
+    /// One menu for the whole List (`contextMenu(forSelectionType:)`), which hands over the
+    /// selection when the right-clicked row is in it and just that row otherwise — Finder's
+    /// convention. A per-row `.contextMenu` reading `selection` made every row depend on it, so a
+    /// shift-click over thousands of files re-evaluated (and re-sorted) the menu in each row.
     @ViewBuilder
-    private func menu(for change: FileChange) -> some View {
-        let targets = selection.contains(change) && selection.count > 1 ? selection.sorted { $0.path < $1.path } : [change]
+    private func listMenu(for clicked: Set<FileChange>) -> some View {
+        // Tree directory rows carry a NUL-prefixed placeholder tag (see `selectionTag`); their
+        // own row menu applies instead.
+        let items = clicked.filter { !$0.path.hasPrefix("\u{0}") }
+        if items.count == 1, let only = items.first, only.status == .conflicted {
+            conflictMenu(for: only)
+        } else if !items.isEmpty {
+            menu(for: items.sorted { $0.path < $1.path })
+        }
+    }
+
+    @ViewBuilder
+    private func menu(for targets: [FileChange]) -> some View {
         let bulk = ChangeSelection.bulkTargets(for: Set(targets))
         if !bulk.toStage.isEmpty {
             Button(bulk.toStage.count == targets.count ? "Stage" : "Stage (\(bulk.toStage.count))", systemImage: "plus.circle") {
-                Task { for change in bulk.toStage { await repo.stage(change) } }
+                Task { await repo.stage(bulk.toStage) }
             }
         }
         if !bulk.toUnstage.isEmpty {
             Button(bulk.toUnstage.count == targets.count ? "Unstage" : "Unstage (\(bulk.toUnstage.count))", systemImage: "minus.circle") {
-                Task { for change in bulk.toUnstage { await repo.unstage(change) } }
+                Task { await repo.unstage(bulk.toUnstage) }
             }
         }
         Divider()
@@ -473,13 +472,14 @@ struct ChangesView: View {
                 repoSheets?.active = .removeFromGit(repo, Array(Set(tracked)).sorted())
             }
         }
-        Divider()
-        ignoreMenu(for: change)
+        // A `.gitignore` pattern is about one file's identity, so only offered for a single file.
+        if targets.count == 1 {
+            Divider()
+            ignoreMenu(for: targets[0])
+        }
     }
 
-    /// "Ignore" submenu: always built from the row that was right-clicked, not the
-    /// bulk `targets` a multi-select menu otherwise acts on — a `.gitignore` pattern is about one
-    /// file's identity, not "do this to everything I have selected".
+    /// "Ignore" submenu for one file: this file, its folder, or its extension.
     @ViewBuilder
     private func ignoreMenu(for change: FileChange) -> some View {
         let folder = (change.path as NSString).deletingLastPathComponent
@@ -521,5 +521,41 @@ private final class TreeCache {
         let tree = FileTree.build(from: changes, path: \.path, salt: salt)
         entries[salt] = (changes, tree)
         return tree
+    }
+}
+
+private extension FileTreeRow where Payload == FileChange {
+    /// The row's change; a directory gets a placeholder no real change can equal (paths never
+    /// contain NUL) and is `.selectionDisabled`, so it never lands in `selection`.
+    var selectionTag: FileChange {
+        if case .file(let change, _) = kind { return change }
+        return FileChange(path: "\u{0}" + id, status: .modified, area: .unstaged)
+    }
+    var directoryPath: String? { if case .directory(_, let path, _) = kind { path } else { nil } }
+}
+
+/// A tree-mode row compared by its data only. Its closures differ on every `ChangesView` render,
+/// so without this every row looked changed after any click and the List re-diffed all of them
+/// — an O(n²) walk, ~0.5 s per click at 5000 files. One concrete type per row (no `switch` at the
+/// `ForEach` level) for the same reason.
+private struct TreeChangeRow: View, Equatable {
+    let row: FileTreeRow<FileChange>
+    let isLFS: Bool
+    let onToggle: (String) -> Void
+    let onIgnoreFolder: (String) -> Void
+    let onRemoveFolder: (String) -> Void
+
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.isLFS == b.isLFS }
+
+    var body: some View {
+        FileTreeRowView(row: row, onToggle: onToggle) { change, _ in
+            ChangeRow(change: change, showsPath: false, isLFS: isLFS)
+        }
+        .contextMenu(row.directoryPath.map { path in
+            ContextMenu {
+                Button("Ignore This Folder", systemImage: "eye.slash") { onIgnoreFolder(path) }
+                Button("Remove Folder from Git…", systemImage: "minus.circle") { onRemoveFolder(path) }
+            }
+        })
     }
 }

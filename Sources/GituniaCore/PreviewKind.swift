@@ -9,6 +9,9 @@ public enum PreviewKind: Sendable, Equatable {
 
     public static func kind(for path: String) -> PreviewKind {
         let ext = (path as NSString).pathExtension
+        // Source extensions macOS maps to something else: `.ts` is an MPEG-2 transport stream to
+        // UTType, which sent TypeScript files to the video player instead of the diff.
+        if codeExtensions.contains(ext.lowercased()) { return .text }
         guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else {
             // No extension (e.g. `Makefile`) or an extension UTType doesn't know: treat as text
             // unless we have positive evidence otherwise — there's nothing else to go on.
@@ -23,6 +26,8 @@ public enum PreviewKind: Sendable, Equatable {
         if type.conforms(to: .text) { return .text }
         return .none
     }
+
+    private static let codeExtensions: Set<String> = ["ts", "mts", "cts"]
 
     /// Office/archive/font/etc. formats with no native `NSImage`/text rendering but a system Quick
     /// Look generator. `UTType("…")` for identifiers with no static `UTType` constant.

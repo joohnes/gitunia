@@ -201,6 +201,27 @@ final class RepositoryStoreTests: XCTestCase {
         XCTAssertTrue(store.repo.changes.isEmpty)
     }
 
+    /// Batch stage/unstage: one git call for a subset — a glob-looking name stays literal, an
+    /// unselected file stays put, and a deletion is staged too.
+    @MainActor
+    func testBatchStageAndUnstageSubset() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let store = RepositoryStore(url: url)
+        try TestHelpers.write("1\n", to: url, "zażółć gęślą.txt")
+        try TestHelpers.write("2\n", to: url, "*.txt")
+        try TestHelpers.write("3\n", to: url, "left alone.txt")
+        try FileManager.default.removeItem(at: url.appendingPathComponent("README.md"))
+        await store.refreshStatus()
+
+        let picked = store.repo.changes.filter { $0.path != "left alone.txt" }
+        await store.stage(picked)
+        XCTAssertEqual(store.stagedChanges.map(\.path).sorted(), ["*.txt", "README.md", "zażółć gęślą.txt"])
+        XCTAssertEqual(store.untrackedChanges.map(\.path), ["left alone.txt"])
+
+        await store.unstage(store.stagedChanges.filter { $0.path != "README.md" })
+        XCTAssertEqual(store.stagedChanges.map(\.path), ["README.md"])
+    }
+
     @MainActor
     func testUntrackedDirectoryListsEachFile() async throws {
         let url = try await TestHelpers.makeTempRepo()

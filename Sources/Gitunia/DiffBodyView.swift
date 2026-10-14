@@ -113,13 +113,18 @@ struct DiffBodyView: View {
                 // before this feature existed.
                 if wrap {
                     ScrollView(.vertical) {
-                        diffContent(shown: shown, total: total, width: geo.size.width)
+                        diffContent(shown: shown, total: total, halves: Self.viewportHalves(geo.size.width))
                             .frame(maxWidth: geo.size.width, minHeight: geo.size.height, alignment: .topLeading)
                     }
                 } else {
                     ScrollView([.vertical, .horizontal]) {
-                        diffContent(shown: shown, total: total, width: geo.size.width)
-                            .frame(minWidth: geo.size.width, minHeight: geo.size.height, alignment: .topLeading)
+                        // A LazyVStack reports the proposed width, not its rows', so the scroll
+                        // content is given the longest line's width explicitly — without it there
+                        // was nothing to scroll to. Split cells clip, so each side gets its own.
+                        let fit = Self.fittedWidths(for: shown, viewport: geo.size.width)
+                        diffContent(shown: shown, total: total, halves: mode == .split ? fit.halves : Self.viewportHalves(geo.size.width))
+                            .frame(width: mode == .split ? fit.halves.total : fit.inline, alignment: .leading)
+                            .frame(minHeight: geo.size.height, alignment: .topLeading)
                     }
                 }
             }
@@ -157,8 +162,34 @@ struct DiffBodyView: View {
         .onAppear { if !initialLineSelection.isEmpty { selectedLines = initialLineSelection } }
     }
 
+    private static func viewportHalves(_ viewport: CGFloat) -> SplitHalves {
+        let half = max((viewport - 1) / 2, 200)
+        return SplitHalves(left: half, right: half)
+    }
+
+    /// Unwrapped content widths that fit the longest line: inline (two gutters + marker = 116) and
+    /// per split side (old: context + removed; new: context + added; gutter 50). Never narrower
+    /// than the viewport. Monospaced body-font advance; a tab counts as four columns.
+    private static func fittedWidths(for diff: FileDiff, viewport: CGFloat) -> (inline: CGFloat, halves: SplitHalves) {
+        var old = 0, new = 0
+        for line in diff.hunks.lazy.flatMap(\.lines) {
+            let columns = line.text.count + 3 * line.text.reduce(0) { $1 == "\t" ? $0 + 1 : $0 }
+            if line.kind != .added { old = max(old, columns) }
+            if line.kind != .removed { new = max(new, columns) }
+        }
+        let base = viewportHalves(viewport).left
+        func text(_ columns: Int) -> CGFloat { CGFloat(columns) * monospacedAdvance + 8 }
+        return (max(viewport, 116 + text(max(old, new))),
+                SplitHalves(left: max(base, 50 + text(old)), right: max(base, 50 + text(new))))
+    }
+
+    private static let monospacedAdvance: CGFloat = {
+        let font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        return ("M" as NSString).size(withAttributes: [.font: font]).width
+    }()
+
     @ViewBuilder
-    private func diffContent(shown: FileDiff, total: Int, width: CGFloat) -> some View {
+    private func diffContent(shown: FileDiff, total: Int, halves: SplitHalves) -> some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Array(shown.hunks.enumerated()), id: \.offset) { index, hunk in
                 let actionLabel = hunk.isClipped ? nil : hunkActionLabel
@@ -172,7 +203,7 @@ struct DiffBodyView: View {
                     }
                 case .split:
                     ForEach(infos, id: \.identity) { info in
-                        sectionSplitView(info: info, hunkIndex: index, width: width, selectable: lineActions != nil && !hunk.isClipped)
+                        sectionSplitView(info: info, hunkIndex: index, halves: halves, selectable: lineActions != nil && !hunk.isClipped)
                     }
                 }
             }
@@ -282,10 +313,10 @@ struct DiffBodyView: View {
     }
 
     @ViewBuilder
-    private func sectionSplitView(info: SectionInfo, hunkIndex: Int, width: CGFloat, selectable: Bool) -> some View {
+    private func sectionSplitView(info: SectionInfo, hunkIndex: Int, halves: SplitHalves, selectable: Bool) -> some View {
         if case .unchanged(let lines, true) = info.section, !expandedSectionKeys.contains(info.key) {
             CollapsedSectionRow(count: lines.count) { toggleExpanded(info.key) }
-                .frame(width: width)
+                .frame(width: halves.total)
         } else {
             let lines = sectionLines(info.section)
             let rows = SideBySide.rows(for: Hunk(header: "", lines: lines))
@@ -294,7 +325,7 @@ struct DiffBodyView: View {
             let refs = selectable ? Dictionary(lines.enumerated().map { ($1, DiffLineRef(hunk: hunkIndex, line: info.lineOffset + $0)) },
                                                uniquingKeysWith: { a, _ in a }) : [:]
             ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
-                SplitRow(row: row, fileExtension: fileExtension, width: width, wrap: wrap, highlights: info.highlights,
+                SplitRow(row: row, fileExtension: fileExtension, halves: halves, wrap: wrap, highlights: info.highlights,
                          isSelected: { refs[$0].map(selectedLines.contains) ?? false },
                          onGutterTap: selectable ? { line in if line.kind != .context, let ref = refs[line] { gutterTapped(ref) } } : nil)
                     .id(rowID(diffHash: diff.hashValue, hunk: hunkIndex, line: info.rowOffset + i))
@@ -438,16 +469,20 @@ struct DiffLineRow: View {
     }
 }
 
+/// Widths of the two split columns; the row is both plus the 1pt divider.
+struct SplitHalves {
+    let left: CGFloat, right: CGFloat
+    var total: CGFloat { left + 1 + right }
+}
+
 private struct SplitRow: View {
     let row: SideBySideRow
     var fileExtension: String?
-    let width: CGFloat
+    let halves: SplitHalves
     var wrap: Bool = false
     var highlights: [DiffLine: [Range<String.Index>]] = [:]
     var isSelected: (DiffLine) -> Bool = { _ in false }
     var onGutterTap: ((DiffLine) -> Void)? = nil
-
-    private var half: CGFloat { max((width - 1) / 2, 200) }
 
     var body: some View {
         // Left/right cells align to `.top` rather than the HStack default `.center` so that, in
@@ -455,14 +490,14 @@ private struct SplitRow: View {
         // first line down — both start flush with the row's top edge, the way single-line rows
         // already read.
         HStack(alignment: .top, spacing: 0) {
-            cell(row.left, number: row.left?.oldNumber)
+            cell(row.left, number: row.left?.oldNumber, width: halves.left)
             Divider()
-            cell(row.right, number: row.right?.newNumber)
+            cell(row.right, number: row.right?.newNumber, width: halves.right)
         }
-        .frame(width: width)
+        .frame(width: halves.total)
     }
 
-    private func cell(_ line: DiffLine?, number: Int?) -> some View {
+    private func cell(_ line: DiffLine?, number: Int?, width: CGFloat) -> some View {
         let selected = line.map(isSelected) ?? false
         return HStack(spacing: 0) {
             Gutter(number: number)
@@ -475,7 +510,7 @@ private struct SplitRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 1)
-        .frame(width: half, alignment: .leading)
+        .frame(width: width, alignment: .leading)
         // In wrap mode, cells grow to fit their own wrapped text; without a constraint the taller
         // side of a pair would simply be taller than the shorter one with no relation between the
         // two, so both sides are asked to fill the row's own height (`.infinity`, top-aligned) —
