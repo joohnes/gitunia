@@ -101,6 +101,7 @@ extension RepositoryStore {
         // `origin` may now point somewhere else (or nowhere) — the PR toolbar's cached
         // "is this GitHub" check and any stale pull request must be re-evaluated, not reused.
         hasGitHubRemote = nil
+        hasAzureRemote = nil
         pullRequest = nil
         await refreshRemotes()
         await refreshStatus()

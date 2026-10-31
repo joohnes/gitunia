@@ -27,6 +27,7 @@ final class RepoSheets {
         /// `good` pre-fills the good commit (History's "Bisect: Mark as Good…").
         case startBisect(RepositoryStore, good: String = "")
         case removeFromGit(RepositoryStore, [String])
+        case pullRequest(RepositoryStore)
         var id: String {
             switch self {
             case .clone: "clone"
@@ -47,6 +48,7 @@ final class RepoSheets {
             case .interactiveRebase(let s, let since): "tidy-\(since ?? ""):\(s.id.path)"
             case .startBisect(let s, let good): "bisect-\(good):\(s.id.path)"
             case .removeFromGit(let s, let paths): "rm-\(paths.joined(separator: "|")):\(s.id.path)"
+            case .pullRequest(let s): "pr:\(s.id.path)"
             }
         }
     }
@@ -80,6 +82,7 @@ struct RepoSheetsPresenter: ViewModifier {
             case .interactiveRebase(let store, let since): InteractiveRebaseSheet(repo: store, since: since)
             case .startBisect(let store, let good): BisectStartSheet(repo: store, good: good)
             case .removeFromGit(let store, let paths): RemoveFromGitSheet(repo: store, paths: paths)
+            case .pullRequest(let store): PullRequestSheetContent(repo: store)
             }
         }
     }

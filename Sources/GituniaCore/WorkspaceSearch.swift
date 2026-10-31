@@ -31,6 +31,6 @@ extension RepositoryStore {
 
     /// Pickaxe: the last 20 commits whose diff adds or removes `query`.
     public func commitsTouching(_ query: String) async -> [CommitInfo] {
-        await history(limit: 20, filterArgs: ["-S\(query)"])
+        await history(limit: 20, filterArgs: ["-S\(query)"], reportErrors: false)
     }
 }

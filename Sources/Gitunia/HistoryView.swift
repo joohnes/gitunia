@@ -35,7 +35,7 @@ struct HistoryView: View {
     /// spinner instead of a misleading "No commits" flash.
     @State private var isLoading = false
     /// The context (repo/branch/filter/file-history path) the last load was for, *without*
-    /// `lastCommitSummary`: a new commit landing keeps paging, a real context change resets it.
+    /// `headOID`: a new commit landing keeps paging, a real context change resets it.
     @State private var lastLoadContext: String?
     /// Only populated in file-history mode (`fileHistoryPath != nil`) — the source of `commits` and
     /// of the per-commit path/kind a restore action or `CommitDiffView`'s preselect needs.
@@ -241,7 +241,7 @@ struct HistoryView: View {
                 ContentUnavailableView("No commits", systemImage: "clock")
             }
         }
-        .task(id: "\(repo.id)-\(repo.repo.lastCommitSummary ?? "")-\(branchKey)-\(filterText)-\(fileHistoryPath ?? "")-\(reviewKey)") {
+        .task(id: "\(repo.id)-\(repo.repo.headOID ?? "")-\(branchKey)-\(filterText)-\(fileHistoryPath ?? "")-\(reviewKey)") {
             // The id also changes when a new commit lands; `lastLoadContext` tells that apart from
             // a real context change (see `HistoryPaging`).
             let context = "\(repo.id)-\(branchKey)-\(filterText)-\(fileHistoryPath ?? "")-\(reviewKey)"
@@ -287,7 +287,7 @@ struct HistoryView: View {
             cherryPickable = notOnHead
             hasMore = loaded.count == limit
         }
-        .task(id: "\(repo.id)-\(repo.repo.lastCommitSummary ?? "")") { await repo.refreshTags() }
+        .task(id: "\(repo.id)-\(repo.repo.headOID ?? "")") { await repo.refreshTags() }
         .modifier(CommitRefDialogs(repo: repo, pending: $pendingCommitRef))
         .onChange(of: repo.id) { selectedBranch = nil; filterText = ""; unreviewedOnly = false; fileHistoryPath = nil; fileHistorySelectedPath = nil }
         .onChange(of: focusFilterRequested.wrappedValue) { _, requested in

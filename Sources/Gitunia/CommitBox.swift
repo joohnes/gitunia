@@ -9,6 +9,9 @@ struct CommitBox: View {
     @Environment(ToastCenter.self) private var toasts
     // Optional: render tests host the box without it (same convention as `RepoSheets`).
     @Environment(RemoteOpsCoordinator.self) private var remoteOps: RemoteOpsCoordinator?
+    @Environment(RepoSheets.self) private var repoSheets: RepoSheets?
+    /// The remote's default branch, without `origin/` — no PR is offered from it.
+    @State private var defaultBranch: String?
     @State private var isCommitting = false
     @State private var isAmending = false
     /// The amend fields: a reword of the *last* commit, not a draft for the next one, so they live
@@ -50,6 +53,14 @@ struct CommitBox: View {
 
     /// Clean tree with unpushed commits: "and Push" pushes on its own.
     private var pushOnly: Bool { !repo.isBusy && !repo.repo.hasChanges && repo.repo.ahead > 0 }
+    /// Clean, fully pushed feature branch with no open PR (a merged/closed one doesn't count): the
+    /// "and Push" slot offers the PR instead.
+    private var offersPullRequest: Bool {
+        guard repoSheets != nil, !isAmending, !repo.isBusy, !repo.repo.hasChanges, repo.repo.ahead == 0,
+              repo.hasUpstream, repo.pullRequestsSupported, repo.currentPullRequest?.state != "OPEN",
+              let branch = repo.repo.branch else { return false }
+        return branch != defaultBranch
+    }
     /// Set by "and Push"; `performCommit` pushes after a successful commit. Reset by every `commit(thenPush:)`.
     @State private var pushAfterCommit = false
 
@@ -128,7 +139,11 @@ struct CommitBox: View {
                     Button(isAmending ? "Amend" : "Commit") { commit() }
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(!canCommit)
-                    if remoteOps != nil && !isAmending {
+                    if offersPullRequest {
+                        Button("Create PR…") { repoSheets?.active = .pullRequest(repo) }
+                            .keyboardShortcut(.return, modifiers: [.command, .shift])
+                            .help("Open a pull request for \(repo.repo.branch ?? "this branch")")
+                    } else if remoteOps != nil && !isAmending {
                         Button("and Push") {
                             if canCommit { commit(thenPush: true) } else { Task { await remoteOps?.requestPush(on: repo, toasts: toasts) } }
                         }
@@ -152,6 +167,14 @@ struct CommitBox: View {
             }
         }
         .onAppear { if amendOnAppear { setAmending(true) } }
+        .task(id: "\(repo.id.path)|\(repo.repo.branch ?? "")") {
+            defaultBranch = await repo.defaultBaseBranch().map { $0.hasPrefix("origin/") ? String($0.dropFirst(7)) : $0 }
+        }
+        // `pullRequest` isn't refreshed on checkout — re-read it so a branch that has one doesn't offer "Create PR".
+        // Same repo only: selecting a repo already refreshes it (`ContentView`), a second call would race it.
+        .onChange(of: [repo.id.path, repo.repo.branch ?? ""]) { old, new in
+            if old[0] == new[0], repo.pullRequestsSupported { Task { await repo.refreshPullRequest() } }
+        }
         .onChange(of: repo.id) { endAmend() }
         .confirmationDialog(
             "Proceed anyway?",

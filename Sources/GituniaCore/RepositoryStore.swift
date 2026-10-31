@@ -131,8 +131,12 @@ public final class RepositoryStore: Identifiable {
     public internal(set) var lastGHError: String?
     /// `origin` is on github.com — nil until first checked, then cached.
     public internal(set) var hasGitHubRemote: Bool?
+    /// `origin` is on Azure DevOps (dev.azure.com / *.visualstudio.com) — nil until first checked.
+    public internal(set) var hasAzureRemote: Bool?
     /// Injectable for tests (fake `gh` script).
     @ObservationIgnored public var gh = GHRunner()
+    /// Injectable for tests (fake `az` script).
+    @ObservationIgnored public var az = GHRunner.azure
     /// Remote-tracking refs as of the last fetch — the "before" for `recordRemoteActivity`.
     @ObservationIgnored public internal(set) var remoteSnapshot: RemoteRefSnapshot?
     /// Mirrors `AppSettings.trackRemoteActivity` (kept in sync by `WorkspaceStore`).
@@ -151,12 +155,16 @@ public final class RepositoryStore: Identifiable {
     let git: GitRunner
     public nonisolated var id: URL { url }
     public let url: URL
+    /// `url`, symlink-resolved once here — the sidebar orders by it on every status tick, and
+    /// `resolvingSymlinksInPath()` is a filesystem walk.
+    public let resolvedPath: String
     /// For a linked worktree, the main repo it belongs to (`<main>` from `<main>/.git/worktrees/<name>`),
     /// symlink-resolved; nil for a main checkout. Set once in `init` — a stat plus one small file read.
     public private(set) var worktreeParent: URL?
 
     public init(url: URL, prefs: RepoPrefs = RepoPrefs(), git: GitRunner = GitRunner()) {
         self.url = url
+        self.resolvedPath = url.resolvingSymlinksInPath().path
         self.git = git
         self.repo = Repository(id: url, tags: Set(prefs.tags), localAIOnly: prefs.localAIOnly)
         self.restoredSelectedPath = prefs.selectedPath

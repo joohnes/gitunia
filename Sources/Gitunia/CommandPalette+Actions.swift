@@ -273,10 +273,11 @@ extension CommandPalette {
         case .hooks:
             openRepoSheet(.hooks(store))
         case .createPullRequest, .openPullRequest:
-            guard GHRunner.isAvailable else { return stop(.info(name, detail: GHError.notInstalled.localizedDescription)) }
             Task {
                 let pr = await store.refreshPullRequest()
-                guard store.pullRequestsSupported else { return stop(.info(name, detail: "origin isn't a GitHub remote")) }
+                guard store.pullRequestsSupported else {
+                    return stop(.info(name, detail: "Needs gh with a GitHub origin, or az (azure-devops extension) with an Azure DevOps origin"))
+                }
                 guard pending == .openPullRequest else { return pullRequestTarget = store } // closes the palette on dismiss
                 guard let url = pr.flatMap({ URL(string: $0.url) }) else {
                     return stop(.info(name, detail: store.lastGHError ?? "No pull request for \(store.repo.branch ?? "this branch")"))

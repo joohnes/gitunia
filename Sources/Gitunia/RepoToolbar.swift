@@ -130,6 +130,11 @@ struct RepoToolbarContent: ToolbarContent {
                 }
                 .disabled(repo.isBusy || !repo.hasUpstream)
                 FetchFromMenu(repo: repo, toasts: toasts)
+                // Not gated on the PR: before the first refresh it's unknown, and the sheet shows details or the form.
+                if repo.pullRequestsSupported {
+                    Button("Pull Request…", systemImage: "arrow.triangle.pull") { repoSheets?.active = .pullRequest(repo) }
+                        .disabled(!repo.hasUpstream)
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }

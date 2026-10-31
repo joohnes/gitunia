@@ -59,8 +59,13 @@ struct FilePreviewView: View {
         .task(id: "\(before?.path ?? "-")|\(after?.path ?? "-")") {
             guard kind == .raster || kind == .vector else { return }
             imagesLoaded = false
-            beforeImage = before.flatMap(NSImage.init(contentsOf:))
-            afterImage = after.flatMap(NSImage.init(contentsOf:))
+            // The file read goes off the main actor (a big image, or a blob on a slow disk). `NSImage`
+            // isn't Sendable, so the bytes cross over and only the `NSImage(data:)` wrap happens here.
+            // ponytail: pixel decode still happens lazily at first draw; pre-decode via CGImageSource if it shows up in a profile.
+            let (b, a) = await Task.detached { (before.flatMap { try? Data(contentsOf: $0) }, after.flatMap { try? Data(contentsOf: $0) }) }.value
+            guard !Task.isCancelled else { return }
+            beforeImage = b.flatMap(NSImage.init(data:))
+            afterImage = a.flatMap(NSImage.init(data:))
             imagesLoaded = true
         }
     }

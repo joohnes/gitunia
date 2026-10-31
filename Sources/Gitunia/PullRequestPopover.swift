@@ -22,7 +22,7 @@ extension PullRequest.Check.Outcome {
     }
 }
 
-/// Toolbar item: hidden unless `gh` is installed and origin is GitHub. Shows `#N` plus a checks
+/// Toolbar item: hidden unless `gh` + a GitHub origin or `az` + an Azure DevOps origin. Shows `#N` plus a checks
 /// dot when the current branch has a PR; click opens `PullRequestPopover`.
 struct PullRequestToolbarButton: View {
     let repo: RepositoryStore
@@ -53,9 +53,14 @@ struct PullRequestPopover: View {
     @State private var loaded = false
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if let pr = repo.currentPullRequest {
                 PullRequestDetails(pr: pr) { if let url = URL(string: pr.url) { NSWorkspace.shared.open(url) } }
+                // Merged/closed: the branch can still get a new PR (more commits pushed after the merge).
+                if pr.state != "OPEN" {
+                    Divider()
+                    CreatePullRequestForm(repo: repo)
+                }
             } else if loaded {
                 CreatePullRequestForm(repo: repo)
             } else {
@@ -67,6 +72,17 @@ struct PullRequestPopover: View {
             await repo.refreshPullRequest()
             loaded = true
         }
+    }
+}
+
+/// `PullRequestPopover` as a `RepoSheets` sheet — the ⋯ menu and the commit box have no toolbar anchor.
+struct PullRequestSheetContent: View {
+    let repo: RepositoryStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        PullRequestPopover(repo: repo)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
     }
 }
 

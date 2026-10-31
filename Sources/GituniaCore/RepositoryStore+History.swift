@@ -7,8 +7,10 @@ extension RepositoryStore {
     /// the branch picker at the top of `HistoryView`. `skip` pages past already-loaded commits
     /// (`HistoryView`'s "Load more"). `filterArgs` (from `HistoryFilter.gitArgs`) are inserted
     /// before `--date=short`, since `HistoryFilter`'s own `-- <path>` must stay the trailing
-    /// argument — matches how git requires pathspecs to come last.
-    public func history(limit: Int = 200, skip: Int = 0, branch: String? = nil, filterArgs: [String] = []) async -> [CommitInfo] {
+    /// argument — matches how git requires pathspecs to come last. `reportErrors: false` for
+    /// background sweeps (cross-repo search), whose failure would toast later in the wrong context.
+    public func history(limit: Int = 200, skip: Int = 0, branch: String? = nil, filterArgs: [String] = [],
+                        reportErrors: Bool = true) async -> [CommitInfo] {
         // A revision starting with `-` would parse as an option (`--output=<file>` writes a file).
         guard branch?.hasPrefix("-") != true else { return [] }
         var args = ["log", branch ?? "HEAD", "-n", "\(limit)"]
@@ -18,8 +20,23 @@ extension RepositoryStore {
         // set, and git treats everything after `--` as a pathspec — including `--pretty`/`--date`
         // if they came after it.
         args += filterArgs
-        let out = try? await git.run(args, in: url)
-        return LogParser.parse(out ?? "")
+        do {
+            return LogParser.parse(try await git.run(args, in: url))
+        } catch {
+            if reportErrors { await reportLoadError(error) }
+            return []
+        }
+    }
+
+    /// History and a commit's diff report a failure through `lastError` (a toast) instead of
+    /// passing for an empty result — except cancellation (a superseded load) and an unborn HEAD
+    /// (a new repo simply has no history yet).
+    private func reportLoadError(_ error: Error) async {
+        guard !Task.isCancelled, let error = error as? GitError else { return }
+        // Unborn HEAD makes `git log HEAD` fail with "ambiguous argument 'HEAD'" — checked
+        // directly rather than by message. Only runs on the failure path.
+        guard (try? await git.run(["rev-parse", "--verify", "-q", "HEAD"], in: url)) != nil else { return }
+        lastError = error
     }
 
     /// A single commit's `CommitInfo` by hash — used to jump to a parent commit clicked in
@@ -42,13 +59,14 @@ extension RepositoryStore {
     /// that specific parent (`git diff <hash>^<parent> <hash>`) — the merge-commit parent picker
     /// in `CommitDiffView`. `nil` keeps the existing default: first-parent diff via `git show`.
     public func commitDiff(_ hash: String, parent: Int? = nil) async -> [FileDiff] {
-        let out: String?
-        if let parent {
-            out = try? await git.run(["diff", "--no-color", "\(hash)^\(parent)", hash], in: url)
-        } else {
-            out = try? await git.run(["show", "--format=", "--no-color", "--first-parent", "-m", hash], in: url)
+        let args = parent.map { ["diff", "--no-color", "\(hash)^\($0)", hash] }
+            ?? ["show", "--format=", "--no-color", "--first-parent", "-m", hash]
+        do {
+            return DiffParser.parse(try await git.run(args, in: url))
+        } catch {
+            await reportLoadError(error)
+            return []
         }
-        return DiffParser.parse(out ?? "")
     }
 
     /// Hashes reachable from `branch` but not from `HEAD` (`git log HEAD..<branch>`) — exactly the

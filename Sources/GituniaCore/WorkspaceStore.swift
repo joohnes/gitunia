@@ -166,7 +166,7 @@ public final class WorkspaceStore {
     /// at depth 1, keeping their relative order. A worktree whose main repo isn't in `repos`
     /// (filtered out, or not in the workspace) stays top-level where it was.
     public static func sidebarOrder(_ repos: [RepositoryStore]) -> [(repo: RepositoryStore, depth: Int)] {
-        let keys = repos.map { $0.url.resolvingSymlinksInPath().path }
+        let keys = repos.map(\.resolvedPath)
         let present = Set(keys)
         func parentKey(_ r: RepositoryStore) -> String? {
             r.worktreeParent.map(\.path).flatMap { present.contains($0) ? $0 : nil }

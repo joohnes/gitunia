@@ -36,6 +36,11 @@ public struct GHRunner: Sendable {
     /// checks the file is actually there and executable, the same test `find(_:)` already applies.
     public var isAvailable: Bool { executable.map(FileManager.default.isExecutableFile(atPath:)) ?? false }
 
+    /// The Azure CLI through the same runner — `az repos pr` is Azure DevOps' `gh pr`. Slower to
+    /// start (Python), hence the longer deadline. `""` when missing, so `isAvailable` is false.
+    public static var azure: GHRunner { GHRunner(executable: azLocated ?? "", timeout: 40) }
+    static let azLocated: String? = find("az")
+
     public func run(_ args: [String], in repo: URL) async throws -> String {
         guard let executable else { throw GHError.notInstalled }
         let result: ProcessResult
@@ -45,7 +50,8 @@ public struct GHRunner: Sendable {
                 try await ProcessRunner.run(
                     executable: executable, arguments: args, currentDirectory: repo,
                     environment: ["GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1", "NO_COLOR": "1",
-                                  "GIT_TERMINAL_PROMPT": "0"]
+                                  "GIT_TERMINAL_PROMPT": "0",
+                                  "AZURE_CORE_ONLY_SHOW_ERRORS": "1", "AZURE_CORE_NO_COLOR": "1"]
                 )
             }
         } catch AIError.timeout {

@@ -20,6 +20,23 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(files[0].hunks[0].lines.map(\.kind), [.added])
     }
 
+    /// A failing load surfaces in `lastError` (toast) rather than looking like "No commits" —
+    /// but a new repo with no commits yet is not a failure.
+    @MainActor
+    func testLoadFailuresReportButUnbornHeadDoesNot() async throws {
+        let empty = RepositoryStore(url: try await TestRepo.make(commit: false))
+        let none = await empty.history()
+        XCTAssertTrue(none.isEmpty)
+        XCTAssertNil(empty.lastError)
+
+        let store = RepositoryStore(url: try await TestHelpers.makeTempRepo())
+        _ = await store.history(branch: "no-such-branch")
+        XCTAssertNotNil(store.lastError)
+        store.lastError = nil
+        _ = await store.commitDiff("0000000000000000000000000000000000000000")
+        XCTAssertNotNil(store.lastError)
+    }
+
     // MARK: - Filter (HistoryFilter.gitArgs against real git)
 
     @MainActor

@@ -89,7 +89,7 @@ extension WorkspaceStore {
     /// `/private/var/...` where the scanner saw `/var/...`.
     public func repository(atPath path: String) -> RepositoryStore? {
         let target = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-        return repositories.first { $0.url.resolvingSymlinksInPath().path == target }
+        return repositories.first { $0.resolvedPath == target }
     }
 
     /// Selects `store`, clearing a scope/search that would hide it.
