@@ -176,7 +176,7 @@ struct DiffBodyView: View {
 
     /// Longest line in columns on each side (old: context + removed; new: context + added). A tab
     /// counts as four columns. Walks every line, so `LayoutCache` keeps the result per diff.
-    fileprivate static func lineColumns(for diff: FileDiff) -> (old: Int, new: Int) {
+    fileprivate nonisolated static func lineColumns(for diff: FileDiff) -> (old: Int, new: Int) {
         var old = 0, new = 0
         for line in diff.hunks.lazy.flatMap(\.lines) {
             let columns = line.text.count + 3 * line.text.reduce(0) { $1 == "\t" ? $0 + 1 : $0 }

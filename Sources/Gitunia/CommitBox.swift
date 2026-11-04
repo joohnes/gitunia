@@ -233,9 +233,16 @@ struct CommitBox: View {
             }
             Button("Cancel", role: .cancel) { pendingCommitFindings = [] }
         } message: {
-            Text((pendingCommitFindings + (commitBlocked ? ["Open git config… to set user.name and user.email, then commit again."] : []))
-                .joined(separator: "\n"))
+            Text(commitFindingsMessage)
         }
+    }
+
+    /// Split out of the alert's `message:` closure, where the inline array concatenation and
+    /// ternary made the type checker time out.
+    private var commitFindingsMessage: String {
+        var lines: [String] = pendingCommitFindings
+        if commitBlocked { lines.append("Open git config… to set user.name and user.email, then commit again.") }
+        return lines.joined(separator: "\n")
     }
 
     /// Amend is a per-glance decision about *this* repo's HEAD, so a repo switch ends it.
