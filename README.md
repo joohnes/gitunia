@@ -71,6 +71,13 @@ lost), stashing all or some files. There's an optional button that asks Claude o
 model to draft the message. Any repository can be marked "local AI only", which keeps it away from
 cloud models entirely.
 
+All Changes also has a commit column: one card per changed repository with its own message (the
+same draft the commit box shows). Check the repositories you want, let AI draft every missing
+message at once (three at a time), then Commit or Commit & Push them in one go. Nothing is checked
+for you, every commit goes through the same secret and large-file checks as a single one, and a
+bulk push never creates a remote branch: repositories without an upstream are left for you to
+push on their own.
+
 **History.** Browse any branch, filter by text, `author:`, `path:`, `since:` and `until:`. Revert,
 cherry-pick, check out, tag, branch from or reset to any commit. File history follows renames and
 lets you restore an old version. Blame is a toggle in the diff toolbar, and clicking a line takes
@@ -107,7 +114,7 @@ for what they actually mean there, since git swaps the two sides.
 | ⌘⇧S | Save workspace as |
 | ⌘R | Refresh all repositories |
 | ⌘K | Command palette |
-| ⌘⇧E | All Changes: every repository's diffs in one review |
+| ⌘⇧E | All Changes: review and commit every repository at once |
 | ⌘⇧F / ⌘⇧L / ⌘⇧P | Fetch / pull / push the selected repository |
 | ⌘↩ | Commit |
 | ⌘⇧O | Open the current file in your editor |
