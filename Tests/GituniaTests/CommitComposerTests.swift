@@ -22,4 +22,23 @@ final class CommitComposerTests: XCTestCase {
         XCTAssertEqual(b.restoredDraft?.body, "generated while A was shown")
         workspace.stopWatching()
     }
+
+    /// The same repository open in two workspace windows keeps one draft per window.
+    func testDraftIsPerWindow() async throws {
+        let repoURL = try await TestRepo.make()
+        func makeWorkspace() async throws -> (WorkspaceStore, RepositoryStore) {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("gitunia-composer-\(UUID().uuidString)")
+            let workspace = WorkspaceStore(app: AppConfig(configStore: ConfigStore(fileURL: root.appendingPathComponent("workspace.json"))))
+            await workspace.openUntitled()
+            return (workspace, try await workspace.addRepository(repoURL))
+        }
+        let (first, inFirst) = try await makeWorkspace()
+        let (second, inSecond) = try await makeWorkspace()
+
+        CommitComposer.for(inFirst, in: first).title = "feat: first window"
+        XCTAssertEqual(CommitComposer.for(inSecond, in: second).title, "")
+        XCTAssertFalse(CommitComposer.for(inFirst, in: first) === CommitComposer.for(inSecond, in: second))
+        first.stopWatching()
+        second.stopWatching()
+    }
 }

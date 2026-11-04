@@ -301,17 +301,18 @@ struct CommitBox: View {
     }
 
     private func generate(with provider: any CommitMessageProvider) {
-        composer.start(with: provider, deliver: deliver(to: repo.url))
+        composer.start(with: provider, deliver: deliver(to: repo.url, draftAtStart: CommitMessage(title: composer.title, body: composer.body)))
     }
 
     /// Where a generated message lands: still amending this same repo → it rewords the commit;
-    /// otherwise it's the next commit's draft.
-    private func deliver(to url: URL) -> @MainActor (CommitMessage) -> Void {
+    /// otherwise it's the next commit's draft — unless the user typed into the draft while the
+    /// model was still working, which a late reply must not overwrite.
+    private func deliver(to url: URL, draftAtStart: CommitMessage) -> @MainActor (CommitMessage) -> Void {
         let composer = composer
         return { message in
             if isAmending && amendingRepo == url {
                 amendTitle = message.title; amendBody = message.body
-            } else {
+            } else if composer.title == draftAtStart.title && composer.body == draftAtStart.body {
                 composer.title = message.title; composer.body = message.body
             }
         }
@@ -319,6 +320,9 @@ struct CommitBox: View {
 
     private func commit(thenPush: Bool = false) {
         guard canCommit else { return }
+        // A reply landing after this commit would refill the cleared draft with a message
+        // describing changes that are already committed.
+        composer.generateTask?.cancel()
         pushAfterCommit = thenPush && !isAmending
         if isAmending {
             let issues = Preflight.check(.amend, repo: repo.repo, hasUpstream: repo.hasUpstream)
@@ -495,17 +499,27 @@ final class CommitComposer {
         }
     }
 
-    // ponytail: never evicted — one small object per repo ever shown; prune on repo removal if that grows.
-    private static var all: [URL: CommitComposer] = [:]
+    // ponytail: never evicted — one small object per (window, repo) ever shown; prune on repo removal if that grows.
+    private static var all: [Key: CommitComposer] = [:]
 
-    /// Keyed by URL so a rebuilt `RepositoryStore` for the same repo keeps its draft and running generation.
+    /// Per workspace window as well as per repo: each window keeps its own draft for a repo in
+    /// several workspaces (by URL alone, typing in one window persisted into the other's file).
+    private struct Key: Hashable {
+        let workspace: ObjectIdentifier
+        let url: URL
+    }
+
+    /// Keyed by URL (within the window) so a rebuilt `RepositoryStore` for the same repo keeps its
+    /// draft and running generation.
     static func `for`(_ repo: RepositoryStore, in workspace: WorkspaceStore) -> CommitComposer {
-        if let existing = all[repo.url] {
-            existing.repo = repo; existing.workspace = workspace
+        let key = Key(workspace: ObjectIdentifier(workspace), url: repo.url)
+        // `existing.workspace` nil: that window is gone and its identifier was reused — start fresh.
+        if let existing = all[key], existing.workspace === workspace {
+            existing.repo = repo
             return existing
         }
         let made = CommitComposer(repo: repo, workspace: workspace)
-        all[repo.url] = made
+        all[key] = made
         return made
     }
 }

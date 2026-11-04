@@ -5,7 +5,7 @@ import GituniaCore
 /// repository → file, with the diffs inline, next to a commit column for committing several
 /// repositories at once (`WorkspaceCommitPanel`). Diffs load only as their file scrolls into view
 /// (the stack is lazy) and are cached per `workingTreeVersion`, so a workspace with hundreds of
-/// changed files opens instantly and an agent's next write reloads only what it touched.
+/// changed files opens instantly; after a write, the files in view reload in place.
 struct WorkspaceChangesSheet: View {
     var workspace: WorkspaceStore
     /// Shows the file in the main window's Changes (and closes the sheet).
@@ -174,10 +174,11 @@ final class WorkspaceReviewModel {
 
     func key(_ repo: RepositoryStore, _ change: FileChange) -> String { repo.id.path + "\u{0}" + change.id }
 
-    /// The cached diff when it is still current for the repository's working tree.
+    /// The last loaded diff, even if the working tree has moved on since: `load` replaces it once
+    /// the fresh one arrives. Showing nothing meanwhile collapsed every visible file of a repo to
+    /// "Loading diff…" on each write an agent made, and the list jumped.
     func diff(_ repo: RepositoryStore, _ change: FileChange) -> Loaded? {
-        guard let loaded = diffs[key(repo, change)], loaded.version == repo.workingTreeVersion else { return nil }
-        return loaded
+        diffs[key(repo, change)]
     }
 
     func load(_ repo: RepositoryStore, _ change: FileChange) async {

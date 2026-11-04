@@ -16,6 +16,9 @@ public enum InlineDiff {
     /// back to full-range highlighting. A few thousand tokens is far beyond any real code line;
     /// this exists to keep a 200KB minified-JS line from hanging the UI.
     static let tokenCountCap = 2000
+    /// Cap on the DP table itself (n·m cells): two 2000-token lines were 4M cells and as many
+    /// string compares per pair, rendered while the diff scrolls. 250k is still two ~500-token lines.
+    static let tableCellCap = 250_000
 
     /// A removed/added line pair: indices into the hunk's `lines` array.
     public struct LinePair: Sendable, Equatable {
@@ -73,7 +76,8 @@ public enum InlineDiff {
 
         let removedTokens = tokenize(removed)
         let addedTokens = tokenize(added)
-        guard removedTokens.count <= tokenCountCap, addedTokens.count <= tokenCountCap else { return fullRanges }
+        guard removedTokens.count <= tokenCountCap, addedTokens.count <= tokenCountCap,
+              removedTokens.count * addedTokens.count <= tableCellCap else { return fullRanges }
 
         let removedStrings = removedTokens.map { String(removed[$0]) }
         let addedStrings = addedTokens.map { String(added[$0]) }

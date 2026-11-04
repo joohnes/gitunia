@@ -39,6 +39,9 @@ struct FileDiffPane<ExtraMenuItems: View>: View {
     @State private var dragStartWidth: Double?
     /// Collapsed directory ids (`FileTreeNode.id`, stable across commits); absence means expanded.
     @State private var collapsedDirectories: Set<String> = []
+    /// The trie survives re-renders: `body` reads `selectedPath`, so every click used to rebuild
+    /// (and locale-sort) the whole tree — the cost `ChangesView`'s own `TreeCache` already removed.
+    @State private var treeCache = DiffTreeCache()
 
     var body: some View {
         HStack(spacing: 0) {
@@ -101,7 +104,7 @@ struct FileDiffPane<ExtraMenuItems: View>: View {
             Group {
                 if treeMode {
                     List(selection: $selectedPath) {
-                        let tree = FileTree.build(from: files, path: \.path, salt: treeSalt)
+                        let tree = treeCache.tree(for: files, salt: treeSalt)
                         ForEach(FileTree.flatten(tree, collapsed: collapsedDirectories)) { row in
                             treeRow(row)
                         }
@@ -127,17 +130,14 @@ struct FileDiffPane<ExtraMenuItems: View>: View {
 
     @ViewBuilder
     private func treeRow(_ row: FileTreeRow<FileDiff>) -> some View {
+        // `.equatable()`: rows carry closures, so without it SwiftUI re-runs every visible row's
+        // body on each selection change instead of only the rows whose content changed.
         switch row.kind {
         case .directory:
-            FileTreeRowView(row: row, onToggle: toggleCollapsed) { _, name in
-                Text(name).lineLimit(1)
-            }
+            DiffTreeRow(row: row, onToggle: toggleCollapsed, menu: fileContextMenu).equatable()
         case .file(let file, _):
-            FileTreeRowView(row: row, onToggle: toggleCollapsed) { _, name in
-                Text(name).lineLimit(1)
-            }
-            .tag(file.path)
-            .contextMenu { fileContextMenu(file.path) }
+            DiffTreeRow(row: row, onToggle: toggleCollapsed, menu: fileContextMenu).equatable()
+                .tag(file.path)
         }
     }
 
@@ -209,5 +209,39 @@ struct TreeModeToggle: View {
         .labelsHidden()
         .fixedSize()
         .help(treeMode ? "Switch to flat list" : "Switch to tree view")
+    }
+}
+
+/// `FileDiffPane`'s tree, rebuilt only when the file list (or its salt) changes. Comparing the
+/// list is cheap when it's the same value: arrays compare storage identity first.
+private final class DiffTreeCache {
+    private var files: [FileDiff]?
+    private var salt = ""
+    private var tree: [FileTreeNode<FileDiff>] = []
+
+    func tree(for files: [FileDiff], salt: String) -> [FileTreeNode<FileDiff>] {
+        if self.files == files, self.salt == salt { return tree }
+        self.files = files
+        self.salt = salt
+        tree = FileTree.build(from: files, path: \.path, salt: salt)
+        return tree
+    }
+}
+
+/// One tree row of `FileDiffPane`, compared on its data only (the closures never change meaning).
+private struct DiffTreeRow<Menu: View>: View, Equatable {
+    let row: FileTreeRow<FileDiff>
+    let onToggle: (String) -> Void
+    let menu: (String) -> Menu
+
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.row == b.row }
+
+    var body: some View {
+        FileTreeRowView(row: row, onToggle: onToggle) { _, name in
+            Text(name).lineLimit(1)
+        }
+        .contextMenu {
+            if case .file(let file, _) = row.kind { menu(file.path) }
+        }
     }
 }
