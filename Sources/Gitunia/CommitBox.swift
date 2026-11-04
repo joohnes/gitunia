@@ -195,7 +195,8 @@ struct CommitBox: View {
             titleVisibility: .visible
         ) {
             Button("Send Anyway", role: .destructive) {
-                composer.confirmSecretWarning(deliver: deliver(to: repo.url))
+                composer.confirmSecretWarning(deliver: deliver(
+                    to: repo.url, draftAtStart: CommitMessage(title: composer.title, body: composer.body)))
             }
             Button("Cancel", role: .cancel) { composer.pendingSecretWarning = nil }
         } message: {
@@ -237,8 +238,7 @@ struct CommitBox: View {
         }
     }
 
-    /// Split out of the alert's `message:` closure, where the inline array concatenation and
-    /// ternary made the type checker time out.
+    /// The commit-findings dialog's text, kept out of the view builder.
     private var commitFindingsMessage: String {
         var lines: [String] = pendingCommitFindings
         if commitBlocked { lines.append("Open git config… to set user.name and user.email, then commit again.") }
