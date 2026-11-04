@@ -19,9 +19,10 @@ struct WorkspaceCommitPanel: View {
 
     private func composer(_ repo: RepositoryStore) -> CommitComposer { CommitComposer.for(repo, in: workspace) }
 
-    /// Mid-merge/rebase repositories can't take a normal commit; they are shown but not offered.
+    /// Mid-merge/rebase repositories, and ones still holding conflicts (a conflicted `stash pop`
+    /// has no operation in progress), can't take a normal commit: shown, but not offered.
     static func canCommit(_ repo: RepositoryStore) -> Bool {
-        repo.operation == nil && repo.repo.hasChanges && repo.repo.isAvailable
+        !repo.needsAttention && repo.repo.hasChanges && repo.repo.isAvailable
     }
 
     private var selected: [RepositoryStore] {
@@ -50,7 +51,11 @@ struct WorkspaceCommitPanel: View {
                                     if on { model.selected.insert(repo.id) } else { model.selected.remove(repo.id) }
                                 }
                             ),
-                            disabled: model.isCommitting
+                            disabled: model.isCommitting,
+                            // Only matters when nothing is staged: the commit then takes every
+                            // change, including the ones the review's filters are hiding.
+                            hiddenByFilters: repo.stagedChanges.isEmpty
+                                ? model.filter.apply(WorkspaceChangesSheet.reviewOrder(repo)).hidden : 0
                         )
                     }
                 }
@@ -274,6 +279,7 @@ private struct CommitCard: View {
     let provider: any CommitMessageProvider
     @Binding var isSelected: Bool
     let disabled: Bool
+    var hiddenByFilters = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -296,6 +302,12 @@ private struct CommitCard: View {
                 Text(operation.commitBoxMessage).font(.caption).foregroundStyle(.secondary)
             } else {
                 Text(stagingSummary).font(.caption).foregroundStyle(.secondary)
+                if hiddenByFilters > 0 {
+                    Label("Includes \(hiddenByFilters) file\(hiddenByFilters == 1 ? "" : "s") hidden by the filters",
+                          systemImage: "eye.slash")
+                        .font(.caption).foregroundStyle(.orange)
+                        .help("Nothing is staged, so the commit stages every change — not only the files shown on the left. Stage the ones you want to limit it.")
+                }
                 TextField("Commit title (feat: …)", text: $composer.title)
                     .textFieldStyle(.roundedBorder)
                     .disabled(disabled)

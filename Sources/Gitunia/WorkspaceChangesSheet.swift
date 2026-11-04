@@ -5,7 +5,7 @@ import GituniaCore
 /// repository → file, with the diffs inline, next to a commit column for committing several
 /// repositories at once (`WorkspaceCommitPanel`). Diffs load only as their file scrolls into view
 /// (the stack is lazy) and are cached per `workingTreeVersion`, so a workspace with hundreds of
-/// changed files opens instantly and an agent's next write reloads only what it touched.
+/// changed files opens instantly; after a write, the files in view reload in place.
 struct WorkspaceChangesSheet: View {
     var workspace: WorkspaceStore
     /// Shows the file in the main window's Changes (and closes the sheet).
@@ -174,10 +174,11 @@ final class WorkspaceReviewModel {
 
     func key(_ repo: RepositoryStore, _ change: FileChange) -> String { repo.id.path + "\u{0}" + change.id }
 
-    /// The cached diff when it is still current for the repository's working tree.
+    /// The last loaded diff, even if the working tree has moved on since: `load` replaces it once
+    /// the fresh one arrives. Showing nothing meanwhile collapsed every visible file of a repo to
+    /// "Loading diff…" on each write an agent made, and the list jumped.
     func diff(_ repo: RepositoryStore, _ change: FileChange) -> Loaded? {
-        guard let loaded = diffs[key(repo, change)], loaded.version == repo.workingTreeVersion else { return nil }
-        return loaded
+        diffs[key(repo, change)]
     }
 
     func load(_ repo: RepositoryStore, _ change: FileChange) async {
@@ -233,11 +234,20 @@ private struct WorkspaceDiffList: View {
         )
         // Keyed on the working-tree version so an agent's write reloads the diff in view.
         .task(id: "\(key)#\(repo.workingTreeVersion)#\(collapsed)") {
-            guard !collapsed else { return }
+            guard !collapsed, change.status != .conflicted else { return }
             await model.load(repo, change)
         }
         if !collapsed {
-            if let loaded = model.diff(repo, change) {
+            if change.status == .conflicted {
+                // `git diff` on a conflicted path is a combined `diff --cc` (`@@@` hunks) that the
+                // parser doesn't read; the main window shows the file with its conflict markers.
+                HStack(spacing: 6) {
+                    Text("Conflicted — resolve it in the main window.").foregroundStyle(.secondary)
+                    Button("Show") { onOpenFile(repo, change.path) }.buttonStyle(.link)
+                }
+                .font(.caption)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else if let loaded = model.diff(repo, change) {
                 diffRows(loaded.diff, key: key, change: change)
             } else {
                 HStack { ProgressView().controlSize(.small); Text("Loading diff…").foregroundStyle(.secondary) }
@@ -308,6 +318,7 @@ private struct RepoHeader: View {
                     .disabled(group.repo.isBusy || group.repo.needsAttention)
             }
             if !group.repo.stagedChanges.isEmpty {
+                // Safe with conflicts present: `unstageAll()` then resets only the staged paths.
                 Button("Unstage All") { Task { await group.repo.unstageAll() } }
                     .controlSize(.small)
                     .disabled(group.repo.isBusy)

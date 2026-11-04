@@ -2,6 +2,12 @@ import Foundation
 
 /// Parses unified diff output of `git diff`.
 public enum DiffParser {
+    /// `parse` on a background thread. The stores are `@MainActor`, and a whole-file diff
+    /// (`-U100000`) or a vendored commit is easily hundreds of thousands of lines.
+    public static func parseInBackground(_ text: String) async -> [FileDiff] {
+        await Task.detached(priority: .userInitiated) { parse(text) }.value
+    }
+
     public static func parse(_ text: String) -> [FileDiff] {
         var files: [FileDiff] = []
         var path: String? = nil

@@ -37,6 +37,12 @@ public enum SecretScanner {
         public var commitSubject = ""
     }
 
+    /// `findings(inLog:)` on a background thread: six regexes per added line over up to 8 MB of
+    /// unpushed log would otherwise freeze the UI before the push confirmation shows.
+    public static func findingsInBackground(inLog log: String) async -> [Finding] {
+        await Task.detached(priority: .userInitiated) { findings(inLog: log) }.value
+    }
+
     /// `git log -p --format=%H%x1f%s` output: each `<hash>\u{1f}<subject>` marker line starts a
     /// commit, and findings carry it. One finding per (commit, path, label); see `findings(inDiff:)`.
     public static func findings(inLog log: String) -> [Finding] {

@@ -24,9 +24,13 @@ public enum WorkspaceSearch {
 extension RepositoryStore {
     /// Working tree + untracked files (not ignored), literal match (`-F`), text files only (`-I`).
     /// Exit 1 is git grep's "no matches", not a failure.
+    /// `--max-count` caps matches per file, so a short query in a big file doesn't read megabytes
+    /// only to keep `limit`; parsing runs off the main actor.
     public func grep(_ query: String, limit: Int = 200) async -> [GrepHit] {
-        let out = try? await git.run(["grep", "-n", "-z", "-I", "-F", "--untracked", "-e", query], in: url, allowedExitCodes: [0, 1])
-        return Array(WorkspaceSearch.parseGrep(out ?? "").prefix(limit))
+        let out = try? await git.run(["grep", "-n", "-z", "-I", "-F", "--untracked", "--max-count=\(limit)", "-e", query],
+                                     in: url, allowedExitCodes: [0, 1])
+        let text = out ?? ""
+        return await Task.detached(priority: .userInitiated) { Array(WorkspaceSearch.parseGrep(text).prefix(limit)) }.value
     }
 
     /// Pickaxe: the last 20 commits whose diff adds or removes `query`.

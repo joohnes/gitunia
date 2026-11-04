@@ -62,7 +62,7 @@ extension RepositoryStore {
         let args = parent.map { ["diff", "--no-color", "\(hash)^\($0)", hash] }
             ?? ["show", "--format=", "--no-color", "--first-parent", "-m", hash]
         do {
-            return DiffParser.parse(try await git.run(args, in: url))
+            return await DiffParser.parseInBackground(try await git.run(args, in: url))
         } catch {
             await reportLoadError(error)
             return []
@@ -198,6 +198,6 @@ extension RepositoryStore {
     /// head do", not "how do the two tips currently differ".
     public func compareDiff(base: String, head: String) async -> [FileDiff] {
         let out = try? await git.run(["diff", "--no-color", "\(base)...\(head)"], in: url)
-        return DiffParser.parse(out ?? "")
+        return await DiffParser.parseInBackground(out ?? "")
     }
 }

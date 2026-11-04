@@ -27,39 +27,68 @@ extension WorkspaceStore {
         watcher = nil
         pendingRefresh.values.forEach { $0.cancel() }
         pendingRefresh = [:]
+        pendingRefreshSince = [:]
         pendingRescan.values.forEach { $0.cancel() }
         pendingRescan = [:]
         flushPendingDraftWrites()
         flushSave()
+        app.flushPendingWrites()
         stopAutoFetch()
     }
 
     private func handleChanges(_ paths: [String]) {
-        let roots = repositories.map(\.url)
         // A linked worktree's HEAD/index/refs live under the *main* repo's
         // `.git/worktrees/<name>/`, not under the worktree's own root (H2) — resolve each repo's
         // real gitdir so such a path routes to the worktree's own `RepositoryStore` instead of
         // being attributed to the main repo purely because its root path prefix-matches.
-        var gitDirs: [URL: URL] = [:]
-        for repo in repositories {
-            if let gitDir = repo.gitDirURL() { gitDirs[repo.url] = gitDir }
+        // Prefixes are built once per batch, longest first, so routing a big batch (an `npm install`)
+        // is one prefix test per candidate rather than re-deriving every repo's path per event path.
+        let byRoot = Dictionary(repositories.map { ($0.url, $0) }, uniquingKeysWith: { first, _ in first })
+        let gitDirPrefixes = repositories.compactMap { repo in repo.gitDirURL().map { (root: repo.url, path: $0.path) } }
+            .sorted { $0.path.utf8.count > $1.path.utf8.count }
+        let rootPrefixes = repositories.map { (root: $0.url, path: $0.url.path) }
+            .sorted { $0.path.utf8.count > $1.path.utf8.count }
+        func owner(_ path: String) -> URL? {
+            func under(_ prefix: String) -> Bool {
+                path.hasPrefix(prefix) && (path.utf8.count == prefix.utf8.count
+                    || path.utf8.dropFirst(prefix.utf8.count).first == UInt8(ascii: "/"))
+            }
+            return gitDirPrefixes.first { under($0.path) }?.root ?? rootPrefixes.first { under($0.path) }?.root
         }
         var unowned: [String] = []
         var touched = Set<URL>()
+        var touchedGitDir = Set<URL>()
         for path in paths {
-            if let root = WorkspaceStore.repository(owning: path, among: roots, gitDirs: gitDirs) { touched.insert(root) }
-            else { unowned.append(path) }
+            if let root = owner(path) {
+                touched.insert(root)
+                if path.contains("/.git/") { touchedGitDir.insert(root) }
+            } else {
+                unowned.append(path)
+            }
         }
+        let now = ContinuousClock.now
         for root in touched {
+            // Only a batch that touched HEAD/index/refs can have moved branches; a working-tree-only
+            // batch lets the refresh skip `for-each-ref`. Marked now, not when the debounce fires,
+            // so a later working-tree-only batch that replaces this pending refresh can't lose it.
+            if touchedGitDir.contains(root), let repo = byRoot[root] { repo.statusRefreshNeedsRefs = true }
+            // Debounced, but with a ceiling: under steady writes (an agent, a watch build) a plain
+            // "quiet for 300ms" debounce would never fire. Past `maxRefreshDelay` the pending
+            // refresh is left to fire instead of being pushed back again.
+            if pendingRefresh[root] != nil, let since = pendingRefreshSince[root], now - since >= Self.maxRefreshDelay { continue }
             pendingRefresh[root]?.cancel()
+            if pendingRefreshSince[root] == nil { pendingRefreshSince[root] = now }
             // A repo with thousands of changes is usually mid mass-rewrite (an agent, a codegen
             // run): each refresh costs a big `git status` plus re-rendering the list, so wait for
             // a longer quiet period before paying it again.
-            let manyChanges = (repositories.first { $0.url == root }?.repo.changes.count ?? 0) > 1000
+            let manyChanges = (byRoot[root]?.repo.changes.count ?? 0) > 1000
             pendingRefresh[root] = Task { [weak self] in
                 try? await Task.sleep(for: manyChanges ? .seconds(1) : .milliseconds(300))
-                guard !Task.isCancelled, let self, let repo = self.repositories.first(where: { $0.url == root }) else { return }
-                await repo.refreshStatus()
+                guard !Task.isCancelled, let self else { return }
+                self.pendingRefresh[root] = nil
+                self.pendingRefreshSince[root] = nil
+                guard let repo = self.repositories.first(where: { $0.url == root }) else { return }
+                await repo.refreshStatus(refs: false)
             }
         }
         // A change nobody owns inside a linked folder may be a new repo (an agent's fresh worktree
@@ -104,20 +133,35 @@ extension WorkspaceStore {
         persistUnseenBaselines(for: joined)
     }
 
-    /// Drops noise inside `.git/`: only HEAD, index and refs/ matter. A linked worktree's own
-    /// HEAD/index/refs live one level deeper, under `.git/worktrees/<name>/` in the *main* repo's
-    /// git directory (H2) — that shape is accepted too, so a commit/checkout made inside a worktree
-    /// still triggers a refresh instead of being dropped as noise.
+    /// Longest a burst of file events can keep pushing a repository's refresh back.
+    static let maxRefreshDelay: Duration = .seconds(2)
+
+    /// Build-output and dependency folders that are gitignored in practice: a watch build or an
+    /// `npm install` writes thousands of files there, and each burst would otherwise cost a full
+    /// `git status` that reports nothing new. ponytail: a repo that *tracks* one of these (vendored
+    /// `node_modules`) sees edits there on its next other refresh, not immediately.
+    nonisolated static let ignoredDirectories = [
+        "/node_modules/", "/.build/", "/DerivedData/", "/__pycache__/", "/.gradle/", "/.next/", "/.nuxt/",
+        "/.turbo/", "/.parcel-cache/", "/.pytest_cache/", "/.mypy_cache/", "/.ruff_cache/", "/.tox/", "/.venv/",
+    ]
+
+    /// Drops noise inside `.git/`: only HEAD, index, refs/ and packed-refs matter (a deleted or
+    /// renamed packed branch only rewrites `packed-refs`). A linked worktree's own HEAD/index/refs
+    /// live one level deeper, under `.git/worktrees/<name>/` in the *main* repo's git directory
+    /// (H2) — that shape is accepted too, so a commit/checkout made inside a worktree still
+    /// triggers a refresh instead of being dropped as noise. Paths under `ignoredDirectories` go too.
     public nonisolated static func relevantPaths(_ paths: [String]) -> [String] {
         paths.filter { p in
-            guard let r = p.range(of: "/.git/") else { return true }
+            guard let r = p.range(of: "/.git/") else {
+                return !ignoredDirectories.contains { p.contains($0) }
+            }
             var inner = Substring(p[r.upperBound...])
             if inner.hasPrefix("worktrees/") {
                 // Drop the "worktrees/<name>/" prefix and test what's left the same way.
                 guard let nameEnd = inner.dropFirst("worktrees/".count).firstIndex(of: "/") else { return false }
                 inner = inner[inner.index(after: nameEnd)...]
             }
-            return inner == "HEAD" || inner == "index" || inner.hasPrefix("refs/")
+            return inner == "HEAD" || inner == "index" || inner == "packed-refs" || inner.hasPrefix("refs/")
         }
     }
 

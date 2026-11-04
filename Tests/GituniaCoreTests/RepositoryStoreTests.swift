@@ -2,6 +2,64 @@ import XCTest
 @testable import GituniaCore
 
 final class RepositoryStoreTests: XCTestCase {
+    /// A refresh requested while another is running waits for a fresh run, so it sees changes
+    /// made after the running one started (an action's own refresh racing a watcher's).
+    @MainActor
+    func testRefreshThatJoinsARunningOneSeesLaterChanges() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let store = RepositoryStore(url: url)
+        let first = Task { await store.refreshStatus() }
+        await Task.yield()
+        try TestHelpers.write("new\n", to: url, "joined.txt")
+        await store.refreshStatus()
+        XCTAssertTrue(store.repo.changes.contains { $0.path == "joined.txt" })
+        await first.value
+    }
+
+    /// With conflicts present, Unstage All resets only the staged paths and leaves the conflict.
+    @MainActor
+    func testUnstageAllKeepsConflictedEntries() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let git = GitRunner()
+        _ = try await git.run(["checkout", "-q", "-b", "other"], in: url)
+        try TestHelpers.write("theirs\n", to: url, "README.md")
+        _ = try await git.run(["commit", "-q", "-am", "theirs"], in: url)
+        _ = try await git.run(["checkout", "-q", "-"], in: url)
+        try TestHelpers.write("ours\n", to: url, "README.md")
+        _ = try await git.run(["commit", "-q", "-am", "ours"], in: url)
+        _ = try? await git.run(["merge", "other"], in: url) // conflicts on README.md
+        try TestHelpers.write("staged\n", to: url, "staged.txt")
+        _ = try await git.run(["add", "staged.txt"], in: url)
+
+        let store = RepositoryStore(url: url)
+        await store.refreshStatus()
+        XCTAssertEqual(store.conflictedChanges.map(\.path), ["README.md"])
+        XCTAssertFalse(store.stagedChanges.isEmpty)
+
+        await store.unstageAll()
+        XCTAssertEqual(store.conflictedChanges.map(\.path), ["README.md"], "the unmerged entry survives")
+        XCTAssertFalse(store.stagedChanges.contains { $0.path == "staged.txt" })
+    }
+
+    /// A staged rename's diff is the rename (old path in the pathspec too), not a whole new file.
+    @MainActor
+    func testStagedRenameDiffIsNotAWholeNewFile() async throws {
+        let url = try await TestHelpers.makeTempRepo()
+        let git = GitRunner()
+        try TestHelpers.write((1...20).map { "line \($0)" }.joined(separator: "\n") + "\n", to: url, "old.txt")
+        _ = try await git.run(["add", "old.txt"], in: url)
+        _ = try await git.run(["commit", "-q", "-m", "add old"], in: url)
+        _ = try await git.run(["mv", "old.txt", "new.txt"], in: url)
+
+        let store = RepositoryStore(url: url)
+        await store.refreshStatus()
+        let change = try XCTUnwrap(store.stagedChanges.first { $0.path == "new.txt" })
+        XCTAssertEqual(change.oldPath, "old.txt")
+        let diff = await store.diff(for: change)
+        XCTAssertEqual(diff?.path, "new.txt")
+        XCTAssertFalse(diff?.hunks.flatMap(\.lines).contains { $0.kind == .added } ?? true, "a pure rename adds no lines")
+    }
+
     @MainActor
     func testWorkingTreeVersionBumpsOnlyOnRealChange() async throws {
         let url = try await TestHelpers.makeTempRepo()

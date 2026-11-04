@@ -127,12 +127,15 @@ struct HistoryView: View {
             List(selection: $selection) {
                 let tagMap = TagParser.byCommit(repo.gitTags)
                 let agents = repo.agentProfile
+                // One pass per render instead of a linear search per row (quadratic after a few
+                // Load More pages of file history).
+                let entriesByHash = Dictionary(fileHistoryEntries.map { ($0.commit.hash, $0) }, uniquingKeysWith: { first, _ in first })
                 // `agentOnly` is now enforced server-side (see `gitArgs`), so `commits` is already
                 // filtered across every page; `agents.matches` below only drives the row's glyph.
                 ForEach(commits) { commit in
                     let isHead = isCurrentBranch && commit.hash == commits.first?.hash
                     let isCherryPickable = cherryPickable.contains(commit.hash)
-                    let fileHistoryEntry = fileHistoryEntries.first { $0.commit.hash == commit.hash }
+                    let fileHistoryEntry = entriesByHash[commit.hash]
                     VStack(alignment: .leading, spacing: 2) {
                         Text(commit.subject).lineLimit(1)
                         HStack(spacing: 6) {

@@ -46,7 +46,7 @@ extension RepositoryStore {
     /// `--no-textconv` to every `stash show` call (C1), so this doesn't repeat them.
     public func stashDiff(_ item: StashItem) async -> [FileDiff] {
         let out = (try? await git.run(["stash", "show", "-p", "--include-untracked", "--no-color", item.hash], in: url)) ?? ""
-        return DiffParser.parse(out)
+        return await DiffParser.parseInBackground(out)
     }
 
     /// `git stash apply` (keeps the entry) or `git stash pop`.

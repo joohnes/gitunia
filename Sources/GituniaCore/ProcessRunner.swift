@@ -69,10 +69,23 @@ public enum ProcessRunner {
     ) async throws -> ProcessResult {
         let box = ProcessBox()
         return try await withTaskCancellationHandler {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try runSync(box: box, executable: executable, arguments: arguments, currentDirectory: currentDirectory,
-                            environment: environment, stdin: stdin)
-            }.value
+            // A dedicated thread, not `Task.detached`: `runSync` blocks until the child exits, and
+            // a blocked task holds one of the few (one per core) threads of Swift's shared pool —
+            // a burst of refreshes across many repos then starved every other async task in the
+            // app (status parsing, sizing) behind git processes. The caller just suspends here.
+            let result: ProcessResult = try await withCheckedThrowingContinuation { continuation in
+                let thread = Thread {
+                    do {
+                        continuation.resume(returning: try runSync(
+                            box: box, executable: executable, arguments: arguments, currentDirectory: currentDirectory,
+                            environment: environment, stdin: stdin))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                thread.qualityOfService = .userInitiated
+                thread.start()
+            }
             try Task.checkCancellation()
             return result
         } onCancel: {
@@ -109,8 +122,13 @@ public enum ProcessRunner {
         if let inPipe, let stdin {
             group.enter()
             Thread {
-                inPipe.fileHandleForWriting.write(Data(stdin.utf8))
-                try? inPipe.fileHandleForWriting.close()
+                let handle = inPipe.fileHandleForWriting
+                // A child that exits without reading its input (git dying on `index.lock`, a missing
+                // `claude`) would otherwise deliver SIGPIPE and kill the whole app. With it off for
+                // this fd the write just fails with EPIPE, which the throwing API reports.
+                _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+                try? handle.write(contentsOf: Data(stdin.utf8))
+                try? handle.close()
                 group.leave()
             }.start()
         }

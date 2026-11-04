@@ -73,15 +73,27 @@ public struct GitRunner: Sendable {
         _ args: [String], in repo: URL, stdin: String?, allowedExitCodes: Set<Int32>,
         literalPathspecs: Bool, extraEnvironment: [String: String] = [:]
     ) async throws -> ProcessResult {
-        let result: ProcessResult
+        // Local commands share a global cap (network ones don't: a slow fetch must not hold up
+        // every status refresh behind it). A formatter or `git pull` script touching 30 repos
+        // otherwise launches 60+ git processes at once.
+        let limited = !args.contains { GitProcessLimiter.networkSubcommands.contains($0) }
+        if limited { await GitProcessLimiter.shared.acquire() }
+        let outcome: Result<ProcessResult, any Error>
         do {
-            result = try await ProcessRunner.run(
+            outcome = .success(try await ProcessRunner.run(
                 executable: Self.executable,
                 arguments: Self.hardenedArguments(args),
                 currentDirectory: repo,
                 environment: Self.environment(literalPathspecs: literalPathspecs).merging(extraEnvironment) { $1 },
                 stdin: stdin
-            )
+            ))
+        } catch {
+            outcome = .failure(error)
+        }
+        if limited { await GitProcessLimiter.shared.release() }
+        let result: ProcessResult
+        do {
+            result = try outcome.get()
         } catch let error as CancellationError {
             throw error
         } catch {
@@ -127,5 +139,26 @@ public struct GitRunner: Sendable {
         let result = try await exec(args, in: repo, stdin: stdin, allowedExitCodes: allowedExitCodes,
                                     literalPathspecs: literalPathspecs, extraEnvironment: extraEnvironment)
         return (result.stdout, result.stderr)
+    }
+}
+
+/// Counting semaphore over concurrent local git processes — see `GitRunner.exec`. A slot is held
+/// only while one process runs, never across another git call, so waiting can't deadlock.
+actor GitProcessLimiter {
+    static let shared = GitProcessLimiter(limit: 12)
+    static let networkSubcommands: Set<String> = ["fetch", "pull", "push", "clone", "ls-remote"]
+
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { available = limit }
+
+    func acquire() async {
+        if available > 0 { available -= 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty { available += 1 } else { waiters.removeFirst().resume() }
     }
 }

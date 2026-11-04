@@ -112,18 +112,26 @@ extension RepositoryStore {
     /// missing, origin isn't GitHub, or gh failed (then `lastGHError` says why).
     @discardableResult
     public func refreshPullRequest() async -> PullRequest? {
-        guard let branch = repo.branch else {
+        // Several callers (selection, push, the popover, the commit box) refresh concurrently, and an
+        // Azure lookup is two slow `az` calls: only the newest request, for the branch still checked
+        // out, may write its answer — else branch A's result lands after a switch to B.
+        pullRequestGeneration += 1
+        let gen = pullRequestGeneration
+        guard let branch = repo.branch, !repo.isDetached else {
             pullRequest = nil
             return nil
         }
+        let found: PullRequest?
         if gh.isAvailable, await checkGitHubRemote() {
-            pullRequest = await pullRequestForCurrentBranch()
+            found = await pullRequestForCurrentBranch()
         } else if az.isAvailable, await checkAzureRemote() {
-            pullRequest = await azurePullRequest(for: branch)
+            found = await azurePullRequest(for: branch)
         } else {
-            pullRequest = nil
+            found = nil
         }
-        return pullRequest
+        guard gen == pullRequestGeneration, branch == repo.branch else { return pullRequest }
+        pullRequest = found
+        return found
     }
 
     func pullRequestForCurrentBranch() async -> PullRequest? {
@@ -141,7 +149,7 @@ extension RepositoryStore {
     }
 
     public func createPullRequest(title: String, body: String, draft: Bool, base: String?) async -> Result<PullRequest, GHError> {
-        guard let branch = repo.branch else { return .failure(.failed("HEAD is detached — check out a branch first.")) }
+        guard let branch = repo.branch, !repo.isDetached else { return .failure(.failed("HEAD is detached — check out a branch first.")) }
         if !(gh.isAvailable && hasGitHubRemote == true), az.isAvailable, await checkAzureRemote() {
             return await createAzurePullRequest(title: title, body: body, draft: draft, base: base, branch: branch)
         }
@@ -271,6 +279,7 @@ extension RepositoryStore {
         do {
             let out = try await az.run(args, in: url)
             let pr = try JSONDecoder().decode(AzurePullRequest.self, from: Data(out.utf8)).pullRequest
+            pullRequestGeneration += 1 // an older "no PR" refresh still in flight must not replace this
             pullRequest = pr
             return .success(pr)
         } catch let error as GHError {

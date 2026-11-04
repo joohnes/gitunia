@@ -37,29 +37,38 @@ public struct ChangeFilter: Equatable, Sendable {
         return change.area == .staged ? .staged : .unstaged
     }
 
-    public func matches(_ change: FileChange) -> Bool {
-        guard kinds.contains(Self.kind(of: change)) else { return false }
-        // A conflict always needs a decision, so it is never hidden as noise.
-        if hideNoise, change.status != .conflicted, Self.isNoise(change.path) { return false }
-        return Self.matches(query: query, path: change.path) || (change.oldPath.map { Self.matches(query: query, path: $0) } ?? false)
-    }
+    public func matches(_ change: FileChange) -> Bool { matches(change, terms: Self.terms(query)) }
 
-    /// The changes to show and how many the filter hid.
+    /// The changes to show and how many the filter hid. The query is split and lowercased once
+    /// here, not again for every file (the review re-filters every repository on each render).
     public func apply(_ changes: [FileChange]) -> (shown: [FileChange], hidden: Int) {
-        let shown = changes.filter(matches)
+        let terms = Self.terms(query)
+        let shown = changes.filter { matches($0, terms: terms) }
         return (shown, changes.count - shown.count)
     }
 
-    static func matches(query: String, path: String) -> Bool {
-        let terms = query.split(whereSeparator: \.isWhitespace)
+    private func matches(_ change: FileChange, terms: [Substring]) -> Bool {
+        guard kinds.contains(Self.kind(of: change)) else { return false }
+        // A conflict always needs a decision, so it is never hidden as noise.
+        if hideNoise, change.status != .conflicted, Self.isNoise(change.path) { return false }
+        return Self.matches(terms: terms, path: change.path) || (change.oldPath.map { Self.matches(terms: terms, path: $0) } ?? false)
+    }
+
+    /// The query's terms, lowercased.
+    private static func terms(_ query: String) -> [Substring] {
+        query.lowercased().split(whereSeparator: \.isWhitespace)
+    }
+
+    static func matches(query: String, path: String) -> Bool { matches(terms: terms(query), path: path) }
+
+    private static func matches(terms: [Substring], path: String) -> Bool {
         guard !terms.isEmpty else { return true }
         let haystack = path.lowercased()
         for term in terms {
-            let lowered = term.lowercased()
-            if lowered.hasPrefix("!") {
-                let excluded = lowered.dropFirst()
+            if term.hasPrefix("!") {
+                let excluded = term.dropFirst()
                 if !excluded.isEmpty, haystack.contains(excluded) { return false }
-            } else if !haystack.contains(lowered) {
+            } else if !haystack.contains(term) {
                 return false
             }
         }

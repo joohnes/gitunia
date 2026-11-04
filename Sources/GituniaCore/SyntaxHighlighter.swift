@@ -80,6 +80,11 @@ public enum SyntaxHighlighter {
         guard !text.isEmpty else { return [] }
         if language == .other { return [SyntaxToken(kind: .plain, range: text.startIndex..<text.endIndex)] }
 
+        // Read once: both are computed properties (a fresh Set/lookup per read), and the loop
+        // below consults them for every character.
+        let quotes = language.quoteCharacters
+        let keywords = language.keywords
+        let lineComment = language.lineComment
         var tokens: [SyntaxToken] = []
         var plainStart = text.startIndex
         var i = text.startIndex
@@ -96,11 +101,11 @@ public enum SyntaxHighlighter {
 
         while i < text.endIndex {
             let c = text[i]
-            if let lc = language.lineComment, text[i...].hasPrefix(lc) {
+            if let lc = lineComment, text[i...].hasPrefix(lc) {
                 emit(.comment, i..<text.endIndex)
                 break
             }
-            if language.quoteCharacters.contains(c) {
+            if quotes.contains(c) {
                 var j = text.index(after: i)
                 while j < text.endIndex, text[j] != c {
                     if text[j] == "\\" { j = text.index(after: j) }
@@ -120,7 +125,7 @@ public enum SyntaxHighlighter {
             if isWord(c), !prevIsWord {
                 var j = i
                 while j < text.endIndex, isWord(text[j]) { j = text.index(after: j) }
-                if language.keywords.contains(String(text[i..<j])) {
+                if keywords.contains(String(text[i..<j])) {
                     emit(.keyword, i..<j)
                 } else {
                     i = j

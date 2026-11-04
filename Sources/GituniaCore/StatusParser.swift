@@ -7,7 +7,10 @@ public enum StatusParser {
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(rawLine)
             if line.hasPrefix("# branch.oid ") {
-                result.headOID = String(line.dropFirst("# branch.oid ".count))
+                // `(initial)` before the first commit: there is no HEAD commit, so leave it nil
+                // rather than let callers treat the placeholder as a hash (`rev-list (initial)...`).
+                let oid = line.dropFirst("# branch.oid ".count)
+                result.headOID = oid == "(initial)" ? nil : String(oid)
             } else if line.hasPrefix("# branch.head ") {
                 result.branch = String(line.dropFirst("# branch.head ".count))
             } else if line.hasPrefix("# branch.ab ") {

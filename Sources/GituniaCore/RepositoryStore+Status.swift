@@ -29,7 +29,46 @@ extension RepositoryStore {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
-    public func refreshStatus() async {
+    /// Refreshes status, one run at a time per repository. A call that arrives while a run is in
+    /// flight doesn't start a second, overlapping one (nor is it dropped): it marks the state
+    /// dirty and waits, and the running loop goes round once more — so when any call returns, the
+    /// model reflects the repository as of *after* that call was made. That matters to an action's
+    /// own refresh (`stageAll()` then reading `stagedChanges`) racing a watcher-driven one, which
+    /// with overlapping runs could supersede it and leave the model stale. The run is an
+    /// unstructured task, so cancelling a caller (the watcher's debounce) no longer kills a
+    /// `git status` that is halfway through; it only stops that caller from waiting.
+    ///
+    /// `refs: false` is the watcher's working-tree-only refresh: branches can't have moved, so
+    /// `for-each-ref` is skipped (the watcher sets `statusRefreshNeedsRefs` itself when a batch
+    /// touched `.git`). Every other caller keeps the default and re-reads them.
+    public func refreshStatus(refs: Bool = true) async {
+        if refs { statusRefreshNeedsRefs = true }
+        if let running = statusRefreshTask {
+            statusRefreshPending = true
+            await running.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            repeat {
+                self.statusRefreshPending = false
+                let refs = self.statusRefreshNeedsRefs || !self.hasLoadedStatus
+                self.statusRefreshNeedsRefs = false
+                await self.refreshStatusOnce(refs: refs)
+            } while self.statusRefreshPending
+            self.statusRefreshTask = nil
+        }
+        statusRefreshTask = task
+        await task.value
+    }
+
+    /// `for-each-ref` over local and remote branches, or nil when `needed` is false.
+    private func branchRefsOutput(_ needed: Bool) async -> String? {
+        guard needed else { return nil }
+        return (try? await git.run(["for-each-ref", "--format=%(refname)%09%(HEAD)", "refs/heads", "refs/remotes"], in: url)) ?? ""
+    }
+
+    private func refreshStatusOnce(refs: Bool) async {
         guard FileManager.default.fileExists(atPath: url.path) else {
             update(\.repo.isAvailable, false)
             return
@@ -45,22 +84,28 @@ extension RepositoryStore {
             // taking git's index lock, so a background refresh never rewrites `.git/index`'s mtime
             // and re-triggers itself via FSEvents. `--branch` also reports the upstream.
             async let statusOut = git.run(["status", "--porcelain=v2", "-uall", "--branch"], in: url)
-            async let refsOut: String = (try? await git.run(["for-each-ref", "--format=%(refname)%09%(HEAD)", "refs/heads", "refs/remotes"], in: url)) ?? ""
-            // One `git log` answers both questions: the first record is HEAD's subject, and a
-            // second record existing means HEAD has a parent — one process fewer than a separate
-            // `rev-parse HEAD~1`. The `%x1f` prefix makes every record a non-empty line even for a
-            // commit with an empty subject, so counting lines stays honest. Author name/email ride
-            // along for `AgentProfile` (sidebar tooltip).
-            async let logOut: String = (try? await git.run(["log", "-2", "--pretty=%x1f%s%x1f%an%x1f%ae"], in: url)) ?? ""
+            async let refsOut = branchRefsOutput(refs)
 
             let statusText = try await statusOut
             // Off the main actor: thousands of changed files is tens of ms of line parsing.
             let (status, upstream) = await Task.detached(priority: .userInitiated) {
                 (StatusParser.parse(statusText), StatusParser.upstream(in: statusText))
             }.value
+            // HEAD's subject/author and whether it has a parent only change when HEAD does, and
+            // most refreshes are an agent editing files — so `git log` runs only when it moved.
+            // One `git log` answers both questions: the first record is HEAD's subject, and a
+            // second record existing means HEAD has a parent — one process fewer than a separate
+            // `rev-parse HEAD~1`. The `%x1f` prefix makes every record a non-empty line even for a
+            // commit with an empty subject, so counting lines stays honest. Author name/email ride
+            // along for `AgentProfile` (sidebar tooltip).
+            let headMoved = !hasLoadedStatus || status.headOID != repo.headOID
+            var logRecords: [[Substring]]?
+            if headMoved {
+                let logOut = (try? await git.run(["log", "-2", "--pretty=%x1f%s%x1f%an%x1f%ae"], in: url)) ?? ""
+                logRecords = logOut.split(separator: "\n", omittingEmptySubsequences: true)
+                    .map { $0.dropFirst().split(separator: "\u{1f}", omittingEmptySubsequences: false) }
+            }
             let refsResult = await refsOut
-            let logRecords = (await logOut).split(separator: "\n", omittingEmptySubsequences: true)
-                .map { $0.dropFirst().split(separator: "\u{1f}", omittingEmptySubsequences: false) }
             let sizedChanges = await Self.withSizes(status.changes, in: url)
             guard gen == statusGeneration else { return }
             // The first load has nothing to compare against — every branch would read as "added".
@@ -71,14 +116,20 @@ extension RepositoryStore {
             next.headOID = status.headOID
             next.ahead = status.ahead
             next.behind = status.behind
-            next.changes = sizedChanges
-            let head = logRecords.first
-            next.lastCommitSummary = head?.first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            next.lastCommitAuthor = head.flatMap { $0.count > 1 ? String($0[1]) : nil }
-            next.lastCommitEmail = head.flatMap { $0.count > 2 ? String($0[2]) : nil }
+            if sizedChanges != next.changes { next.changes = sizedChanges }
+            if let logRecords {
+                let head = logRecords.first
+                next.lastCommitSummary = head?.first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                next.lastCommitAuthor = head.flatMap { $0.count > 1 ? String($0[1]) : nil }
+                next.lastCommitEmail = head.flatMap { $0.count > 2 ? String($0[2]) : nil }
+            }
             let oldChanges = repo.changes
+            let oldHead = repo.headOID
             update(\.repo, next)
-            let newFingerprint = repo.fingerprint
+            // The fingerprint (a sort and a hash over every path) only depends on HEAD and the
+            // change list, so an unchanged tick reuses it instead of rehashing thousands of paths.
+            let newFingerprint = (fingerprint != nil && oldHead == repo.headOID && oldChanges == repo.changes)
+                ? fingerprint : repo.fingerprint
             // The fingerprint ignores content; sizes also catch a re-edit of an already-modified file.
             // ponytail: a same-size re-edit still slips through — add mtimes to `withSizes` if that bites.
             if newFingerprint != fingerprint || sizedChanges != oldChanges { workingTreeVersion += 1 }
@@ -89,12 +140,12 @@ extension RepositoryStore {
                 if lastViewedFingerprint == nil { lastViewedFingerprint = newFingerprint }
                 onFingerprintChange?(self)
             }
-            update(\.branches, BranchParser.parse(refsResult))
+            if let refsResult { update(\.branches, BranchParser.parse(refsResult)) }
             update(\.hasUpstream, upstream != nil)
             let upstreamParts = (upstream ?? "").split(separator: "/", maxSplits: 1).map(String.init)
             update(\.upstreamRemote, upstreamParts.first)
             update(\.upstreamBranch, upstreamParts.count == 2 ? upstreamParts[1] : nil)
-            update(\.hasParentCommit, logRecords.count > 1)
+            if let logRecords { update(\.hasParentCommit, logRecords.count > 1) }
             refreshOperationState()
             hasLoadedStatus = true
             if let beforeEvents, let onEvents {

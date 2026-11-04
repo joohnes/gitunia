@@ -259,6 +259,29 @@ final class WorkspaceStoreBulkTests: XCTestCase {
         store.stopWatching()
     }
 
+    /// Pull All while Fetch All runs must not hand back the fetch's progress as "pulled".
+    @MainActor
+    func testOtherKindOfBulkOperationIsRefusedWhileOneIsInFlight() async throws {
+        let ws = try TestHelpers.makeTempDir()
+        _ = try await makeConnectedRepo(named: "a", in: ws)
+        _ = try await makeConnectedRepo(named: "b", in: ws)
+        let store = try makeStore()
+        await store.openUntitled(linkingFolder: ws)
+
+        let inFlight = Task { await store.fetchAll() }
+        await Task.yield()
+        XCTAssertNotNil(store.bulk)
+
+        let refused = await store.pullAll()
+        XCTAssertTrue(refused.refused)
+        XCTAssertEqual(refused.kind, .pull)
+        XCTAssertEqual(refused.total, 0)
+
+        let finished = await inFlight.value
+        XCTAssertFalse(finished.refused)
+        store.stopWatching()
+    }
+
     /// Regression test for the auto-fetch/user-action race: a silent sweep (what the background
     /// auto-fetch timer runs) must not start a second sweep over the same repos while one is
     /// already in flight — concurrent git invocations on one repo can collide on git's lock file.

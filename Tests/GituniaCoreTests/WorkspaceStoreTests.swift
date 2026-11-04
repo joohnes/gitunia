@@ -16,6 +16,16 @@ final class WorkspaceStoreTests: XCTestCase {
         ])
     }
 
+    func testRelevantPathsDropsBuildOutputAndKeepsPackedRefs() {
+        let paths = [
+            "/ws/a/node_modules/left-pad/index.js",
+            "/ws/a/.build/debug/App.o",
+            "/ws/a/src/node_modules.swift", // a file merely named like one stays
+            "/ws/a/.git/packed-refs",
+        ]
+        XCTAssertEqual(WorkspaceStore.relevantPaths(paths), ["/ws/a/src/node_modules.swift", "/ws/a/.git/packed-refs"])
+    }
+
     func testRepositoryOwningPathUsesLongestPrefix() {
         let roots = [URL(fileURLWithPath: "/ws/a"), URL(fileURLWithPath: "/ws/a-b"), URL(fileURLWithPath: "/ws/a/inner")]
         XCTAssertEqual(WorkspaceStore.repository(owning: "/ws/a-b/x.txt", among: roots)?.path, "/ws/a-b")
@@ -286,6 +296,7 @@ final class WorkspaceStoreTests: XCTestCase {
         try TestHelpers.write("a\n", to: r1.url, "a.txt")
         await r1.refreshStatus()
         XCTAssertFalse(r1.hasUnseenChanges, "being viewed")
+        store.app.flushPendingWrites() // the "seen" fingerprint is saved lazily
         XCTAssertEqual(ConfigStore(fileURL: cfgURL).loadWithWarning().0.repos[r1.url.path]?.lastViewedFingerprint, r1.fingerprint)
 
         store.select(r2)
