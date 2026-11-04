@@ -44,7 +44,7 @@ extension RepositoryStore {
     }
 
     private func runBisect(_ args: [String]) async -> GitError? {
-        lastError = nil
+        if lastError != nil { lastError = nil } // observers re-render on every write, even nil → nil
         beginBusy()
         defer { endBusy() }
         // Stdout is stored before the refresh: `refreshBisect` reads "Bisecting: N left" from it.

@@ -24,6 +24,12 @@ final class StatusParserTests: XCTestCase {
         XCTAssertNil(StatusParser.upstream(in: ""))
     }
 
+    /// Before the first commit git prints `# branch.oid (initial)`; that's not a hash.
+    func testInitialBranchHasNoHeadOID() {
+        XCTAssertNil(StatusParser.parse("# branch.oid (initial)\n# branch.head main").headOID)
+        XCTAssertEqual(StatusParser.parse("# branch.oid abc123\n# branch.head main").headOID, "abc123")
+    }
+
     func testDetachedHead() {
         let r = StatusParser.parse("# branch.head (detached)")
         XCTAssertEqual(r.branch, "(detached)")

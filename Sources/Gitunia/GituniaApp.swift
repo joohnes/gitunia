@@ -265,6 +265,7 @@ struct MenuBarContent: View {
             let op = await action(store)
             if var c = combined {
                 c.completed += op.completed; c.total += op.total; c.failures += op.failures
+                c.refused = c.refused && op.refused // only "refused" when no workspace ran it
                 combined = c
             } else { combined = op }
         }

@@ -15,7 +15,7 @@ public struct Repository: Identifiable, Hashable, Sendable {
     public var tags: Set<String>
     public var localAIOnly: Bool
     public var isAvailable = true
-    /// HEAD's commit hash from `# branch.oid` (`"(initial)"` before the first commit).
+    /// HEAD's commit hash from `# branch.oid`; nil before the first commit.
     public var headOID: String? = nil
 
     public init(id: URL, name: String? = nil, branch: String? = nil, ahead: Int = 0, behind: Int = 0,
@@ -40,7 +40,13 @@ public struct Repository: Identifiable, Hashable, Sendable {
     /// fetch (ahead/behind are left out). Drives the sidebar's unseen dot and "Recent activity".
     public var fingerprint: String {
         let text = ([headOID ?? ""] + changes.map { "\($0.area.rawValue)\($0.status.rawValue)\($0.path)" }.sorted()).joined(separator: "\n")
-        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        let digits = Array("0123456789abcdef".utf8)
+        var hex: [UInt8] = []
+        hex.reserveCapacity(64)
+        for byte in SHA256.hash(data: Data(text.utf8)) {
+            hex.append(digits[Int(byte >> 4)]); hex.append(digits[Int(byte & 0xf)])
+        }
+        return String(decoding: hex, as: UTF8.self)
     }
 }
 

@@ -128,6 +128,8 @@ public final class RepositoryStore: Identifiable {
     var onMarkReviewed: ((RepositoryStore) -> Void)?
     /// Pull-request state via `gh` — see `RepositoryStore+PullRequests`. Never refreshed by `refreshStatus()`.
     public internal(set) var pullRequest: PullRequest?
+    /// Bumped by every `pullRequest` write path — see `refreshPullRequest`.
+    @ObservationIgnored var pullRequestGeneration = 0
     public internal(set) var lastGHError: String?
     /// `origin` is on github.com — nil until first checked, then cached.
     public internal(set) var hasGitHubRemote: Bool?
@@ -234,6 +236,11 @@ public final class RepositoryStore: Identifiable {
     /// serialization, so overlapping runs (e.g. two FSEvents-debounced refreshes) can otherwise
     /// finish out of order and let a stale result overwrite a newer one.
     var statusGeneration = 0
+    /// The in-flight `refreshStatus()` run and whether another was requested meanwhile.
+    @ObservationIgnored var statusRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var statusRefreshPending = false
+    /// Branches may have moved since the last refresh — see `refreshStatus(refs:)`.
+    @ObservationIgnored var statusRefreshNeedsRefs = false
 
     /// Called with what changed between two `refreshStatus()` results (never on the first one).
     @ObservationIgnored public var onEvents: (([RepoEvent]) -> Void)?
@@ -245,7 +252,7 @@ public final class RepositoryStore: Identifiable {
     /// `context`, when given, is passed as `-U<context>` — a huge value (e.g. 100000) makes git
     /// return the whole file as one hunk instead of the default 3-line-context hunks.
     public func diff(for change: FileChange, context: Int? = nil) async -> FileDiff? {
-        lastError = nil
+        if lastError != nil { lastError = nil } // observers re-render on every write, even nil → nil
         do {
             let text: String
             let contextArgs = context.map { ["-U\($0)"] } ?? []
@@ -253,11 +260,16 @@ public final class RepositoryStore: Identifiable {
             case (.untracked, _):
                 text = try await git.run(["diff", "--no-index"] + contextArgs + ["--", "/dev/null", change.path], in: url, allowedExitCodes: [0, 1])
             case (_, .staged):
-                text = try await git.run(["diff", "--cached"] + contextArgs + ["--", change.path], in: url)
+                // A rename needs both sides in the pathspec: git filters paths before it detects
+                // renames, so with only the new path the diff reads as a whole new file.
+                let paths = change.oldPath.map { [$0, change.path] } ?? [change.path]
+                text = try await git.run(["diff", "--cached", "-M"] + contextArgs + ["--"] + paths, in: url)
             case (_, .unstaged):
                 text = try await git.run(["diff"] + contextArgs + ["--", change.path], in: url)
             }
-            return DiffParser.parse(text).first
+            // Below the rename threshold git prints the old path's deletion as a separate file.
+            let files = await DiffParser.parseInBackground(text)
+            return files.first { $0.path == change.path } ?? files.first
         } catch let e as GitError {
             lastError = e
             return nil
@@ -291,13 +303,16 @@ public final class RepositoryStore: Identifiable {
         await perform(["add", "-A"])
     }
 
-    /// `git reset -q`: unstages everything in one shot, mirroring `stageAll()`. A repo with
-    /// unresolved conflicts should not call this directly — conflicted files are never staged
-    /// (see `stagedChanges`), but resetting the whole index can still disturb their unmerged
-    /// entries, so callers with conflicts present should pass `stagedChanges` to `unstage(_:)`
-    /// instead, the same fallback `stageAll()`'s callers already use.
+    /// `git reset -q`: unstages everything in one shot, mirroring `stageAll()`. With unresolved
+    /// conflicts a whole-index reset would drop their unmerged entries (the conflict silently
+    /// becomes a plain modification with the markers still in it), so then only the explicitly
+    /// staged paths are reset.
     public func unstageAll() async {
-        await perform(["reset", "-q"])
+        if conflictedChanges.isEmpty {
+            await perform(["reset", "-q"])
+        } else {
+            await unstage(stagedChanges)
+        }
     }
 
     /// Discards tracked, unstaged working-tree modifications only (`git restore --worktree`) —
@@ -314,7 +329,7 @@ public final class RepositoryStore: Identifiable {
     /// Discards working tree changes. Untracked files are deleted.
     public func discard(_ change: FileChange) async {
         if change.status == .untracked {
-            lastError = nil
+            if lastError != nil { lastError = nil } // observers re-render on every write, even nil → nil
             beginBusy()
             defer { endBusy() }
             do {
@@ -445,7 +460,7 @@ public final class RepositoryStore: Identifiable {
         let path = url.appendingPathComponent(".gitignore")
         let existing = (try? String(contentsOf: path, encoding: .utf8)) ?? ""
         guard let updated = GitignoreEditor.appending(pattern, to: existing) else { return false }
-        lastError = nil
+        if lastError != nil { lastError = nil } // observers re-render on every write, even nil → nil
         do {
             try updated.write(to: path, atomically: true, encoding: .utf8)
         } catch {
@@ -670,7 +685,7 @@ public final class RepositoryStore: Identifiable {
     func exec<T>(_ commands: [String]..., stdin: String? = nil, literalPathspecs: Bool = false,
                  recordError: Bool = true, refreshOnLaunchFailure: Bool = true,
                  then finish: (Result<GitOutput, GitError>) async -> T) async -> T {
-        lastError = nil
+        if lastError != nil { lastError = nil } // observers re-render on every write, even nil → nil
         beginBusy()
         defer { endBusy() }
         var result: Result<GitOutput, GitError> = .success(("", ""))

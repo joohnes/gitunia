@@ -6,6 +6,9 @@ public struct BulkOperation: Sendable, Equatable {
     public var completed: Int
     public var total: Int
     public var failures: [Failure]
+    /// Not run: another bulk operation (or a silent auto-fetch) was already in flight. Callers must
+    /// not report this as the result of their own action.
+    public var refused = false
 }
 
 extension WorkspaceStore {
@@ -27,8 +30,12 @@ extension WorkspaceStore {
         skip: (RepositoryStore) -> Bool,
         action: @escaping (RepositoryStore) async -> RemoteResult
     ) async -> BulkOperation {
-        if let bulk { return bulk }
-        guard !bulkInFlight else { return BulkOperation(kind: kind, completed: 0, total: 0, failures: []) }
+        // Refused while another sweep runs: a snapshot of a running operation of the same kind
+        // (so its progress is visible), otherwise an empty one — never another kind's progress.
+        if let bulk, bulk.kind == kind { var running = bulk; running.refused = true; return running }
+        guard bulk == nil, !bulkInFlight else {
+            return BulkOperation(kind: kind, completed: 0, total: 0, failures: [], refused: true)
+        }
         bulkInFlight = true
         defer { bulkInFlight = false }
         let eligible = repositories.filter { $0.repo.isAvailable && !skip($0) }

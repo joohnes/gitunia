@@ -81,7 +81,7 @@ extension RepositoryStore {
             return await compareDiff(base: await revision(base), head: h)
         case (.ref(let b), .worktree(let wt, _)):
             let out = (try? await git.run(["diff", "--no-color", "--merge-base", b], in: wt)) ?? ""
-            var files = DiffParser.parse(out)
+            var files = await DiffParser.parseInBackground(out)
             for path in await untrackedPaths(in: wt).prefix(Self.worktreeCompareFileCap) {
                 if let d = await noIndexDiff(nil, wt.appendingPathComponent(path), path: path, in: wt) { files.append(d) }
             }

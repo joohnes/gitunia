@@ -95,6 +95,8 @@ public final class WorkspaceStore {
 
     var watcher: FSEventsWatcher?
     var pendingRefresh: [URL: Task<Void, Never>] = [:]
+    /// When each pending refresh was first scheduled — caps how long events can postpone it.
+    var pendingRefreshSince: [URL: ContinuousClock.Instant] = [:]
     var pendingRescan: [String: Task<Void, Never>] = [:]
     private let saver = Debouncer()
     var autoFetchTask: Task<Void, Never>?
@@ -496,17 +498,17 @@ public final class WorkspaceStore {
     /// Persists the activity time (rare: only real changes), and keeps the selected repo "seen".
     private func fingerprintDidChange(_ store: RepositoryStore) {
         if let activity = store.lastActivity, activity != app.prefs(for: store.url.path).lastActivity {
-            app.updatePrefs(for: store.url.path) { $0.lastActivity = activity }
+            app.updatePrefs(for: store.url.path, persistLater: true) { $0.lastActivity = activity }
         }
         if store.id == selectedRepoID { markViewed(store) }
     }
 
-    /// Records `store`'s current state as seen. `updatePrefs` writes synchronously, hence the `!=` guard.
+    /// Records `store`'s current state as seen. The `!=` guard skips a no-op prefs update.
     private func markViewed(_ store: RepositoryStore) {
         guard let fingerprint = store.fingerprint,
               app.prefs(for: store.url.path).lastViewedFingerprint != fingerprint else { return }
         store.lastViewedFingerprint = fingerprint
-        app.updatePrefs(for: store.url.path) { $0.lastViewedFingerprint = fingerprint }
+        app.updatePrefs(for: store.url.path, persistLater: true) { $0.lastViewedFingerprint = fingerprint }
     }
 
     func sharedPrefsDidChange(for path: String, _ prefs: RepoPrefs) {

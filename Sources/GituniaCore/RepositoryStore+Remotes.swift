@@ -102,6 +102,7 @@ extension RepositoryStore {
         // "is this GitHub" check and any stale pull request must be re-evaluated, not reused.
         hasGitHubRemote = nil
         hasAzureRemote = nil
+        pullRequestGeneration += 1
         pullRequest = nil
         await refreshRemotes()
         await refreshStatus()

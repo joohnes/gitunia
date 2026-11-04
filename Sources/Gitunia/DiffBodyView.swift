@@ -97,6 +97,12 @@ struct DiffBodyView: View {
     // holding a dictionary directly: mutating it inside `sectionInfos` (called from `body`) must
     // not itself trigger a SwiftUI re-render, or every cache-miss would recursively invalidate.
     @State private var highlightCache = HighlightRangeCache()
+    // Everything `body` derives from the diff alone (its hash, the truncated copy, line widths,
+    // section splits), computed once per diff rather than on every render. Same inert plain-class
+    // trick as `highlightCache`. Hashing a `FileDiff` walks every line's text, and it used to run
+    // per section and per visible row on every render; telling whether the diff changed is an
+    // `==` instead, which is O(1) for the same value (arrays compare storage identity first).
+    @State private var layoutCache = LayoutCache()
 
     // In whole-file mode, long unchanged runs collapse (see DiffSections); an ordinary hunk's
     // three lines of context never clear the threshold, so passing `.max` there is a no-op that
@@ -104,7 +110,8 @@ struct DiffBodyView: View {
     private var collapseThreshold: Int { isWholeFile ? 12 : .max }
 
     var body: some View {
-        let (shown, total) = diff.truncated(toLines: maxLines)
+        let layout = layoutCache.prepare(for: diff)
+        let (shown, total) = layout.truncated(toLines: maxLines)
         ScrollViewReader { proxy in
             GeometryReader { geo in
                 // Wrapping and horizontal scrolling don't mix: with wrap on, rows are
@@ -121,7 +128,7 @@ struct DiffBodyView: View {
                         // A LazyVStack reports the proposed width, not its rows', so the scroll
                         // content is given the longest line's width explicitly — without it there
                         // was nothing to scroll to. Split cells clip, so each side gets its own.
-                        let fit = Self.fittedWidths(for: shown, viewport: geo.size.width)
+                        let fit = Self.fittedWidths(columns: layout.columns(for: shown, maxLines: maxLines), viewport: geo.size.width)
                         diffContent(shown: shown, total: total, halves: mode == .split ? fit.halves : Self.viewportHalves(geo.size.width))
                             .frame(width: mode == .split ? fit.halves.total : fit.inline, alignment: .leading)
                             .frame(minHeight: geo.size.height, alignment: .topLeading)
@@ -167,16 +174,22 @@ struct DiffBodyView: View {
         return SplitHalves(left: half, right: half)
     }
 
-    /// Unwrapped content widths that fit the longest line: inline (two gutters + marker = 116) and
-    /// per split side (old: context + removed; new: context + added; gutter 50). Never narrower
-    /// than the viewport. Monospaced body-font advance; a tab counts as four columns.
-    private static func fittedWidths(for diff: FileDiff, viewport: CGFloat) -> (inline: CGFloat, halves: SplitHalves) {
+    /// Longest line in columns on each side (old: context + removed; new: context + added). A tab
+    /// counts as four columns. Walks every line, so `LayoutCache` keeps the result per diff.
+    fileprivate static func lineColumns(for diff: FileDiff) -> (old: Int, new: Int) {
         var old = 0, new = 0
         for line in diff.hunks.lazy.flatMap(\.lines) {
             let columns = line.text.count + 3 * line.text.reduce(0) { $1 == "\t" ? $0 + 1 : $0 }
             if line.kind != .added { old = max(old, columns) }
             if line.kind != .removed { new = max(new, columns) }
         }
+        return (old, new)
+    }
+
+    /// Unwrapped content widths that fit the longest line: inline (two gutters + marker = 116) and
+    /// per split side (gutter 50). Never narrower than the viewport. Monospaced body-font advance.
+    private static func fittedWidths(columns: (old: Int, new: Int), viewport: CGFloat) -> (inline: CGFloat, halves: SplitHalves) {
+        let (old, new) = columns
         let base = viewportHalves(viewport).left
         func text(_ columns: Int) -> CGFloat { CGFloat(columns) * monospacedAdvance + 8 }
         return (max(viewport, 116 + text(max(old, new))),
@@ -237,7 +250,7 @@ struct DiffBodyView: View {
     /// every redraw). Keyed by the `DiffLine` value itself (its line numbers make it unique
     /// within a diff) so both inline rows and split's left/right cells can look themselves up
     /// without tracking a separate index.
-    private struct SectionInfo {
+    fileprivate struct SectionInfo {
         let section: DiffSection
         let lineOffset: Int
         let rowOffset: Int
@@ -248,24 +261,72 @@ struct DiffBodyView: View {
         /// at the same position are different views and must not inherit each other's rows.
         let identity: String
         let highlights: [DiffLine: [Range<String.Index>]]
+        /// The section as split mode pairs it up — needed for `rowOffset` anyway, so kept.
+        let splitRows: [SideBySideRow]
+    }
+
+    /// Per-diff memo for `body` — see `layoutCache`. Reset whenever a different diff arrives.
+    fileprivate final class LayoutCache {
+        private var diff: FileDiff?
+        private(set) var hash = 0
+        private var truncatedByLimit: [Int: (diff: FileDiff, totalLines: Int)] = [:]
+        private var columnsByLimit: [Int: (old: Int, new: Int)] = [:]
+        private var sectionsByKey: [String: [SectionInfo]] = [:]
+
+        func prepare(for diff: FileDiff) -> LayoutCache {
+            if self.diff != diff {
+                self.diff = diff
+                hash = diff.hashValue
+                truncatedByLimit = [:]
+                columnsByLimit = [:]
+                sectionsByKey = [:]
+            }
+            return self
+        }
+
+        func truncated(toLines limit: Int) -> (diff: FileDiff, totalLines: Int) {
+            if let cached = truncatedByLimit[limit] { return cached }
+            let source = diff ?? FileDiff(path: "", isBinary: false, hunks: [])
+            let result = source.truncated(toLines: limit)
+            truncatedByLimit[limit] = result
+            return result
+        }
+
+        func columns(for shown: FileDiff, maxLines: Int) -> (old: Int, new: Int) {
+            if let cached = columnsByLimit[maxLines] { return cached }
+            let result = DiffBodyView.lineColumns(for: shown)
+            columnsByLimit[maxLines] = result
+            return result
+        }
+
+        func sections(_ key: String, compute: () -> [SectionInfo]) -> [SectionInfo] {
+            if let cached = sectionsByKey[key] { return cached }
+            let result = compute()
+            sectionsByKey[key] = result
+            return result
+        }
     }
 
     private func sectionInfos(for hunk: Hunk, hunkIndex: Int) -> [SectionInfo] {
-        let sections = DiffSections.sections(for: hunk.lines, collapseThreshold: collapseThreshold)
-        var lineOffset = 0
-        var rowOffset = 0
-        return sections.enumerated().map { i, section in
-            let lines = sectionLines(section)
-            let key = "\(diff.hashValue)-\(hunkIndex)-\(i)"
-            let highlights = highlightCache.ranges(diffHash: diff.hashValue, key: key) {
-                highlightRanges(for: section, lines: lines)
+        let diffHash = layoutCache.hash
+        return layoutCache.sections("\(mode.rawValue)-\(collapseThreshold)-\(hunkIndex)") {
+            let sections = DiffSections.sections(for: hunk.lines, collapseThreshold: collapseThreshold)
+            var lineOffset = 0
+            var rowOffset = 0
+            return sections.enumerated().map { i, section in
+                let lines = sectionLines(section)
+                let key = "\(diffHash)-\(hunkIndex)-\(i)"
+                let highlights = highlightCache.ranges(diffHash: diffHash, key: key) {
+                    highlightRanges(for: section, lines: lines)
+                }
+                let splitRows = SideBySide.rows(for: Hunk(header: "", lines: lines))
+                let info = SectionInfo(section: section, lineOffset: lineOffset, rowOffset: rowOffset,
+                                        key: key, identity: DiffRowID.section(mode: mode, key: key),
+                                        highlights: highlights, splitRows: splitRows)
+                lineOffset += lines.count
+                rowOffset += splitRows.count
+                return info
             }
-            let info = SectionInfo(section: section, lineOffset: lineOffset, rowOffset: rowOffset,
-                                    key: key, identity: DiffRowID.section(mode: mode, key: key),
-                                    highlights: highlights)
-            lineOffset += lines.count
-            rowOffset += SideBySide.rows(for: Hunk(header: "", lines: lines)).count
-            return info
         }
     }
 
@@ -307,7 +368,7 @@ struct DiffBodyView: View {
                             highlightRanges: info.highlights[line] ?? [],
                             isSelected: selectedLines.contains(ref),
                             onGutterTap: selectable && line.kind != .context ? { gutterTapped(ref) } : nil)
-                    .id(rowID(diffHash: diff.hashValue, hunk: hunkIndex, line: info.lineOffset + i))
+                    .id(rowID(diffHash: layoutCache.hash, hunk: hunkIndex, line: info.lineOffset + i))
             }
         }
     }
@@ -319,7 +380,7 @@ struct DiffBodyView: View {
                 .frame(width: halves.total)
         } else {
             let lines = sectionLines(info.section)
-            let rows = SideBySide.rows(for: Hunk(header: "", lines: lines))
+            let rows = info.splitRows
             // DiffLine values are unique within a hunk (their line numbers), so a split cell can
             // find its own ref without positional bookkeeping.
             let refs = selectable ? Dictionary(lines.enumerated().map { ($1, DiffLineRef(hunk: hunkIndex, line: info.lineOffset + $0)) },
@@ -328,7 +389,7 @@ struct DiffBodyView: View {
                 SplitRow(row: row, fileExtension: fileExtension, halves: halves, wrap: wrap, highlights: info.highlights,
                          isSelected: { refs[$0].map(selectedLines.contains) ?? false },
                          onGutterTap: selectable ? { line in if line.kind != .context, let ref = refs[line] { gutterTapped(ref) } } : nil)
-                    .id(rowID(diffHash: diff.hashValue, hunk: hunkIndex, line: info.rowOffset + i))
+                    .id(rowID(diffHash: layoutCache.hash, hunk: hunkIndex, line: info.rowOffset + i))
             }
         }
     }
@@ -389,7 +450,7 @@ struct DiffBodyView: View {
             let rows = SideBySide.rows(for: hunk)
             rowIndex = rows.firstIndex { $0.left == targetLine || $0.right == targetLine } ?? 0
         }
-        proxy.scrollTo(rowID(diffHash: diff.hashValue, hunk: 0, line: rowIndex), anchor: .top)
+        proxy.scrollTo(rowID(diffHash: layoutCache.hash, hunk: 0, line: rowIndex), anchor: .top)
     }
 }
 
@@ -570,15 +631,36 @@ struct LineText: View {
         }
     }
 
+    /// Tokenized, colored lines by language + text. Rows re-run `body` on every parent render (a
+    /// gutter click, a status tick), so without this each visible line was re-tokenized each
+    /// time. Only the syntax colors are cached; word-level highlights are applied on top per row.
+    @MainActor private static let syntaxCache: NSCache<NSString, AttributedBox> = {
+        let cache = NSCache<NSString, AttributedBox>()
+        cache.countLimit = 20_000
+        return cache
+    }()
+
+    final class AttributedBox {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
     private var highlighted: AttributedString {
         let language = SyntaxLanguage.from(fileExtension: fileExtension)
-        var result = AttributedString()
-        for token in SyntaxHighlighter.tokens(in: text, language: language) {
-            var piece = AttributedString(String(text[token.range]))
-            piece.foregroundColor = Theme.syntax(token.kind)
-            result.append(piece)
+        let cacheKey = "\(language)\u{0}\(text)" as NSString
+        var result: AttributedString
+        if let cached = Self.syntaxCache.object(forKey: cacheKey) {
+            result = cached.value
+        } else {
+            result = AttributedString()
+            for token in SyntaxHighlighter.tokens(in: text, language: language) {
+                var piece = AttributedString(String(text[token.range]))
+                piece.foregroundColor = Theme.syntax(token.kind)
+                result.append(piece)
+            }
+            if result.characters.isEmpty { result = AttributedString(text) }
+            Self.syntaxCache.setObject(AttributedBox(result), forKey: cacheKey)
         }
-        if result.characters.isEmpty { result = AttributedString(text) }
 
         // `highlightRanges` are `String.Index` values into `text`; `result`'s own index type is
         // unrelated (AttributedString has its own index space) even though both walk the same

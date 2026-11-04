@@ -37,10 +37,12 @@ enum CommitGate {
         async let lfsCheck = repo.checkLFSInstalled()
         await identityRefreshed
         let identityIssues = Preflight.identityWarnings(repo.identity).filter { $0.id != "signing" }
-        var secrets = repo.withoutIgnoredSecrets(SecretScanner.findings(inDiff: await stagedDiff))
+        // A diff has no commit marker lines, so the log scan reads it as-is (= `findings(inDiff:)`).
+        var secrets = repo.withoutIgnoredSecrets(await SecretScanner.findingsInBackground(inLog: await stagedDiff))
         // Nothing staged (e.g. amending only the message) skips the diff scan above — HEAD's
         // own patch is scanned too so a secret already in the commit still gets caught.
-        for finding in repo.withoutIgnoredSecrets(SecretScanner.findings(inLog: await headPatch)) where !secrets.contains(finding) {
+        let headFindings = await SecretScanner.findingsInBackground(inLog: await headPatch)
+        for finding in repo.withoutIgnoredSecrets(headFindings) where !secrets.contains(finding) {
             secrets.append(finding)
         }
         let lfsInstalled = await lfsCheck

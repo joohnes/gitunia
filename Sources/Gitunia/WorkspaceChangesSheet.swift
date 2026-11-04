@@ -233,11 +233,20 @@ private struct WorkspaceDiffList: View {
         )
         // Keyed on the working-tree version so an agent's write reloads the diff in view.
         .task(id: "\(key)#\(repo.workingTreeVersion)#\(collapsed)") {
-            guard !collapsed else { return }
+            guard !collapsed, change.status != .conflicted else { return }
             await model.load(repo, change)
         }
         if !collapsed {
-            if let loaded = model.diff(repo, change) {
+            if change.status == .conflicted {
+                // `git diff` on a conflicted path is a combined `diff --cc` (`@@@` hunks) that the
+                // parser doesn't read; the main window shows the file with its conflict markers.
+                HStack(spacing: 6) {
+                    Text("Conflicted — resolve it in the main window.").foregroundStyle(.secondary)
+                    Button("Show") { onOpenFile(repo, change.path) }.buttonStyle(.link)
+                }
+                .font(.caption)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+            } else if let loaded = model.diff(repo, change) {
                 diffRows(loaded.diff, key: key, change: change)
             } else {
                 HStack { ProgressView().controlSize(.small); Text("Loading diff…").foregroundStyle(.secondary) }
@@ -308,6 +317,7 @@ private struct RepoHeader: View {
                     .disabled(group.repo.isBusy || group.repo.needsAttention)
             }
             if !group.repo.stagedChanges.isEmpty {
+                // Safe with conflicts present: `unstageAll()` then resets only the staged paths.
                 Button("Unstage All") { Task { await group.repo.unstageAll() } }
                     .controlSize(.small)
                     .disabled(group.repo.isBusy)

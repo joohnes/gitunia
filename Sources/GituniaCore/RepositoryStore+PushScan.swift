@@ -36,7 +36,8 @@ extension RepositoryStore {
         if data.count > 8 * 1024 * 1024 {
             return [SecretScanner.Finding(path: "", label: "diff too large to scan")]
         }
-        return withoutIgnoredSecrets(SecretScanner.findings(inLog: String(decoding: data, as: UTF8.self)))
+        let findings = await SecretScanner.findingsInBackground(inLog: String(decoding: data, as: UTF8.self))
+        return withoutIgnoredSecrets(findings)
     }
 
     /// Push All's pre-flight: which of `repos` have unpushed secret-looking lines. Chunked by 8

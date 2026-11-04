@@ -461,7 +461,7 @@ final class CommitComposer {
         if !provider.isLocal {
             // Added lines per file, minus files the user excluded; `scan` still catches a secret
             // only in removed/context lines (no file to show, but it's in the diff being sent).
-            let all = SecretScanner.findings(inDiff: diff)
+            let all = await SecretScanner.findingsInBackground(inLog: diff)
             let shown = repo.withoutIgnoredSecrets(all)
             let labels = all.isEmpty ? SecretScanner.scan(diff) : Array(Set(shown.map(\.label))).sorted()
             if !labels.isEmpty {

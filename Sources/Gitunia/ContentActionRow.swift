@@ -117,13 +117,8 @@ struct ContentActionRow: View {
         }
     }
 
-    /// Same trade in the other direction: a bare `git reset -q` touches the whole index, so any
-    /// conflict means explicit paths rather than risk disturbing its unmerged entries.
+    /// `RepositoryStore.unstageAll()` itself falls back to explicit paths when conflicts are present.
     private func unstageAll() async {
-        if repo.conflictedChanges.isEmpty {
-            await repo.unstageAll()
-        } else {
-            await repo.unstage(repo.stagedChanges)
-        }
+        await repo.unstageAll()
     }
 }

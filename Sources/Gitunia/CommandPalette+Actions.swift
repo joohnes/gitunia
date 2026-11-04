@@ -6,7 +6,9 @@ import GituniaCore
 enum RemoteActionRunner {
     @MainActor
     static func postBulkResult(_ op: BulkOperation, kind: String, toasts: ToastCenter) {
-        if op.failures.isEmpty {
+        if op.refused {
+            toasts.post(.info("Another operation on all repositories is still running", detail: "Try again when it finishes"))
+        } else if op.failures.isEmpty {
             toasts.post(.success("\(kind) \(op.completed) of \(op.total)"))
         } else {
             let detail = op.failures.map { "\($0.repo): \($0.message)" }.joined(separator: "\n")

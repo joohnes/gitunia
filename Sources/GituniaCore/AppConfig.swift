@@ -18,6 +18,8 @@ public final class AppConfig {
     /// Remote activity log, `activity.json` next to `workspace.json`.
     public let activity: ActivityLog
     @ObservationIgnored private var attached: [WeakStore] = []
+    /// Coalesces the high-frequency, low-stakes prefs writes (`persistLater`) into one save.
+    @ObservationIgnored private let laterSaver = Debouncer()
 
     private struct WeakStore { weak var store: WorkspaceStore? }
 
@@ -87,11 +89,19 @@ public final class AppConfig {
 
     public func prefs(for path: String) -> RepoPrefs { config.repos[path] ?? RepoPrefs() }
 
-    public func updatePrefs(for path: String, _ change: (inout RepoPrefs) -> Void) {
+    /// `persistLater`: for bookkeeping that changes on every status tick (activity time, the
+    /// "seen" fingerprint) — re-encoding and atomically rewriting the whole file on the main
+    /// thread for each one adds up with many repos and agents. Saved within a couple of seconds,
+    /// and on `flushPendingWrites()` (window close, quit); memory is updated immediately either way.
+    public func updatePrefs(for path: String, persistLater: Bool = false, _ change: (inout RepoPrefs) -> Void) {
         var prefs = prefs(for: path)
         change(&prefs)
         config.repos[path] = prefs
-        persist()
+        if persistLater {
+            laterSaver.schedule(.seconds(2)) { [weak self] in self?.persist() }
+        } else {
+            persist()
+        }
         // Local AI only is a privacy guard read from each window's own `RepositoryStore`, so every
         // window showing this repo must see the change, not just the one that made it.
         attached.removeAll { $0.store == nil }
@@ -201,7 +211,11 @@ public final class AppConfig {
 
     public func dismissPersistError() { persistError = nil }
 
+    /// Writes any `persistLater` change still waiting.
+    public func flushPendingWrites() { laterSaver.flush() }
+
     private func persist() {
+        laterSaver.cancel() // this save includes whatever was waiting
         do {
             try configStore.save(config)
             reportedPersistError = nil
