@@ -79,6 +79,9 @@ extension CommandPalette {
         case .action(.searchAllRepositories):
             isPresented = false
             onRequestWorkspaceSearch()
+        case .action(.reviewAllChanges):
+            isPresented = false
+            repoSheets?.showsWorkspaceChanges = true
         case .action:
             break // unreachable: every action without a repository step is handled above
         case .allRepositories:

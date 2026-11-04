@@ -58,7 +58,11 @@ and a badge for uncommitted changes. From there:
 The short version: it covers the git you use day to day, and it's careful about the parts that
 can lose work.
 
-**Seeing changes.** Diffs can be inline or side by side, as hunks or as the whole file, with
+**Seeing changes.** All Changes (⌘⇧E) shows the diffs of every repository in the workspace in one
+scrolling review, grouped by repository, with filters for path, staged/unstaged/untracked and a
+switch that hides lockfiles and generated files.
+
+In a single repository, diffs can be inline or side by side, as hunks or as the whole file, with
 word-level highlighting and long unchanged stretches folded away. The file list works as a flat
 list or a tree. You can stage single hunks or just the lines you select, and discard the same way.
 
@@ -103,6 +107,7 @@ for what they actually mean there, since git swaps the two sides.
 | ⌘⇧S | Save workspace as |
 | ⌘R | Refresh all repositories |
 | ⌘K | Command palette |
+| ⌘⇧E | All Changes: every repository's diffs in one review |
 | ⌘⇧F / ⌘⇧L / ⌘⇧P | Fetch / pull / push the selected repository |
 | ⌘↩ | Commit |
 | ⌘⇧O | Open the current file in your editor |

@@ -40,7 +40,7 @@ enum PaletteRows {
         case createPullRequest, openPullRequest
         case applyPatch, copyDiffAsPatch
         case startBisect, bisectGood, bisectBad, bisectSkip, bisectReset
-        case stashAll, searchAllRepositories
+        case stashAll, searchAllRepositories, reviewAllChanges
         case showActivity, checkForUpdates
 
         var spec: Spec {
@@ -106,6 +106,7 @@ enum PaletteRows {
             case .bisectReset: Spec(title: "Bisect: Reset", icon: "arrow.uturn.backward.circle", chip: "Bisect: reset")
             case .stashAll: Spec(title: "Stash all changed repositories…", icon: "tray.2")
             case .searchAllRepositories: Spec(title: "Search in all repositories…", icon: "text.magnifyingglass")
+            case .reviewAllChanges: Spec(title: "All Changes — review and commit every repository…", icon: "square.stack.3d.down.right")
             case .showActivity: Spec(title: "Show Activity", icon: "bell.badge")
             case .checkForUpdates: Spec(title: "Check for Updates…", icon: "arrow.down.app")
             }
