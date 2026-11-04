@@ -11,6 +11,8 @@ struct ContentView: View {
     @Environment(ToastCenter.self) private var toasts
     @Environment(EditorOpenCoordinator.self) private var editorRequests
     @Environment(RemoteOpsCoordinator.self) private var remoteOps
+    /// Optional, like everywhere else: render tests build `ContentView` without it.
+    @Environment(RepoSheets.self) private var repoSheets: RepoSheets?
     /// Optional: render tests build `ContentView` without it.
     @Environment(HistoryNavigator.self) private var navigator: HistoryNavigator?
     /// The repo `restoreSelection` last ran for — gates `consumePendingNavigation` (see `HistoryNavigator`).
@@ -221,6 +223,13 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    repoSheets?.showsWorkspaceChanges = true
+                } label: { Label("All Changes", systemImage: "square.stack.3d.down.right") }
+                    .help("Review and commit the changes of every repository (⌘⇧E)")
+                    .disabled(repoSheets == nil || workspace.repositories.isEmpty)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     Task { await workspace.refreshAll() }
                 } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             }
@@ -405,6 +414,10 @@ struct ContentView: View {
             Color.clear
                 .sheet(isPresented: $showWorkspaceSearch) {
                     WorkspaceSearchSheet(workspace: workspace, onOpenFile: openSearchHit, onOpenCommit: openSearchCommit)
+                }
+                .sheet(isPresented: Binding(get: { repoSheets?.showsWorkspaceChanges ?? false },
+                                            set: { repoSheets?.showsWorkspaceChanges = $0 })) {
+                    WorkspaceChangesSheet(workspace: workspace, onOpenFile: openSearchHit)
                 }
                 .onChange(of: navigator?.pending) { consumePendingNavigation() }
                 .alert("Go to Commit", isPresented: Binding(get: { goToCommitRepo != nil }, set: { if !$0 { goToCommitRepo = nil } })) {

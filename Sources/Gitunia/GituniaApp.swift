@@ -127,6 +127,9 @@ private struct WorkspaceCommands: Commands {
             .disabled(focused == nil)
             Button("Manage Workspace…") { sheets?.active = .manageWorkspace }
                 .disabled(sheets == nil)
+            Button("All Changes…") { sheets?.showsWorkspaceChanges = true }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(sheets == nil || focused?.repositories.isEmpty != false)
             Divider()
             Button("Refresh All") {
                 guard let focused else { return }

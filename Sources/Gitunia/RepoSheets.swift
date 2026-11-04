@@ -53,6 +53,9 @@ final class RepoSheets {
         }
     }
     var active: Sheet?
+    /// "All Changes": every repository's changes in one review. Not a `Sheet` case because the
+    /// window's `ContentView` hosts it (it hands files back to the main window's Changes).
+    var showsWorkspaceChanges = false
 }
 
 struct RepoSheetsPresenter: ViewModifier {
