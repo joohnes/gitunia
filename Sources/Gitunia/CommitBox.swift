@@ -195,12 +195,7 @@ struct CommitBox: View {
             titleVisibility: .visible
         ) {
             Button("Send Anyway", role: .destructive) {
-                if let pending = composer.pendingSecretWarning {
-                    let composer = composer
-                    composer.pendingSecretWarning = nil
-                    composer.isGenerating = true
-                    composer.generateTask = Task { await runGenerate(with: pending.provider, prompt: pending.prompt, into: composer) }
-                }
+                composer.confirmSecretWarning(deliver: deliver(to: repo.url))
             }
             Button("Cancel", role: .cancel) { composer.pendingSecretWarning = nil }
         } message: {
@@ -306,56 +301,19 @@ struct CommitBox: View {
     }
 
     private func generate(with provider: any CommitMessageProvider) {
-        // Captured once: everything below writes to the repo it was started in.
-        let composer = composer
-        composer.generateError = nil
-        composer.isGenerating = true
-        composer.generateTask = Task {
-            if repo.repo.localAIOnly && !provider.isLocal {
-                composer.generateError = AIError.localOnlyRepo(providerName: provider.name).localizedDescription
-                composer.isGenerating = false
-                return
-            }
-            if repo.stagedChanges.isEmpty { await repo.stageAll() }
-            let (stat, diff) = await repo.stagedDiffForAI()
-            guard !diff.isEmpty else { composer.generateError = "Nothing staged to describe."; composer.isGenerating = false; return }
-            let prompt = PromptBuilder.build(stat: stat, diff: diff, limit: workspace.config.settings.diffCharLimit)
-            // Cloud providers see the raw diff; repos not restricted to Local AI still deserve a
-            // heads-up before something secret-shaped leaves the machine. `localAIOnly` repos
-            // never reach here with a non-local provider (blocked above), so this only fires for
-            // repos where the user could still choose a cloud provider.
-            if !provider.isLocal {
-                // Added lines per file, minus files the user excluded; `scan` still catches a secret
-                // only in removed/context lines (no file to show, but it's in the diff being sent).
-                let all = SecretScanner.findings(inDiff: diff)
-                let shown = repo.withoutIgnoredSecrets(all)
-                let labels = all.isEmpty ? SecretScanner.scan(diff) : Array(Set(shown.map(\.label))).sorted()
-                if !labels.isEmpty {
-                    composer.isGenerating = false
-                    composer.pendingSecretWarning = (labels, shown.map { "\($0.path): \($0.label)" }, provider, prompt)
-                    return
-                }
-            }
-            await runGenerate(with: provider, prompt: prompt, into: composer)
-        }
+        composer.start(with: provider, deliver: deliver(to: repo.url))
     }
 
-    /// Sends `prompt` to `provider` and fills in the title/body. Called directly from `generate`,
-    /// or after the user confirms sending a secret-shaped diff to a cloud provider.
-    private func runGenerate(with provider: any CommitMessageProvider, prompt: String, into composer: CommitComposer) async {
-        defer { composer.isGenerating = false }
-        do {
-            let message = stripIfEnabled(try await provider.generate(prompt: prompt))
-            guard !Task.isCancelled else { return }
-            // Still amending this same repo → it rewords the commit; otherwise it's the next commit's draft.
-            if isAmending && amendingRepo == repo.url {
+    /// Where a generated message lands: still amending this same repo → it rewords the commit;
+    /// otherwise it's the next commit's draft.
+    private func deliver(to url: URL) -> @MainActor (CommitMessage) -> Void {
+        let composer = composer
+        return { message in
+            if isAmending && amendingRepo == url {
                 amendTitle = message.title; amendBody = message.body
             } else {
                 composer.title = message.title; composer.body = message.body
             }
-        } catch is CancellationError {
-        } catch {
-            composer.generateError = error.localizedDescription
         }
     }
 
@@ -384,44 +342,17 @@ struct CommitBox: View {
     private func scanThenCommit() {
         isCommitting = true
         Task {
-            // Nothing staged → stage everything first, so the scan below sees what will be
-            // committed. Per-file when conflicts exist: `git add -A` would mark them resolved.
-            if !isAmending, repo.stagedChanges.isEmpty {
-                if repo.conflictedChanges.isEmpty {
-                    await repo.stageAll()
-                } else {
-                    await repo.stage(repo.unstagedChanges + repo.untrackedChanges)
-                }
-                guard !repo.stagedChanges.isEmpty else { isCommitting = false; return }
+            if !isAmending {
+                guard await CommitGate.stageIfNothingStaged(repo) else { isCommitting = false; return }
             }
-            // Independent git calls — run together, not one after another.
-            async let identityRefreshed: Void = repo.refreshIdentity()
-            async let stagedDiff = repo.stagedDiff()
-            async let headPatch = isAmending ? repo.headPatch() : ""
-            async let lfsCheck = repo.checkLFSInstalled()
-            await identityRefreshed
-            let identityIssues = Preflight.identityWarnings(repo.identity).filter { $0.id != "signing" }
-            var secrets = repo.withoutIgnoredSecrets(SecretScanner.findings(inDiff: await stagedDiff))
-            // Nothing staged (e.g. amending only the message) skips the diff scan above — HEAD's
-            // own patch is scanned too so a secret already in the commit still gets caught.
-            for finding in repo.withoutIgnoredSecrets(SecretScanner.findings(inLog: await headPatch)) where !secrets.contains(finding) {
-                secrets.append(finding)
-            }
-            let lfsInstalled = await lfsCheck
-            let large = Preflight.largeFileWarnings(in: repo.repo.changes, rules: repo.attributeRules, lfsInstalled: lfsInstalled)
-            let findings = identityIssues.map(\.message)
-                + secrets.map { "\($0.path): \($0.label)" }
-                + large.map(\.message)
-            // ponytail: one Track button for the first large file; the rescan surfaces the next one.
-            lfsSuggestion = lfsInstalled ? large.first.flatMap { issue in
-                issue.suggestedLFSPattern.map { ($0, String(issue.id.dropFirst("large-file:".count))) }
-            } : nil
-            commitBlocked = identityIssues.contains { $0.severity == .blocker }
-            if findings.isEmpty {
+            let report = await CommitGate.scan(repo, amending: isAmending)
+            lfsSuggestion = report.lfsSuggestion
+            commitBlocked = report.blocked
+            if report.findings.isEmpty {
                 performCommit()
             } else {
                 isCommitting = false
-                pendingCommitFindings = findings
+                pendingCommitFindings = report.findings
             }
         }
     }
@@ -496,6 +427,72 @@ final class CommitComposer {
     private func persist() {
         guard let repo, let workspace else { return }
         workspace.setCommitDraft(CommitMessage(title: title, body: body), for: repo)
+    }
+
+    // MARK: - Generating a message
+
+    /// Starts `generate` as this draft's (cancellable) generation, replacing one still running.
+    func start(with provider: any CommitMessageProvider, deliver: (@MainActor (CommitMessage) -> Void)? = nil) {
+        generateTask?.cancel()
+        generateTask = Task { await generate(with: provider, deliver: deliver) }
+    }
+
+    /// The commit box's and All Changes' shared pipeline: stage everything when nothing is
+    /// staged, build the prompt, stop to ask before a secret-shaped diff goes to a cloud provider
+    /// (`pendingSecretWarning`), then generate. `deliver` receives the message; nil = this draft.
+    func generate(with provider: any CommitMessageProvider, deliver: (@MainActor (CommitMessage) -> Void)? = nil) async {
+        guard let repo, let workspace else { return }
+        generateError = nil
+        pendingSecretWarning = nil
+        isGenerating = true
+        if repo.repo.localAIOnly && !provider.isLocal {
+            generateError = AIError.localOnlyRepo(providerName: provider.name).localizedDescription
+            isGenerating = false
+            return
+        }
+        if repo.stagedChanges.isEmpty { await repo.stageAll() }
+        let (stat, diff) = await repo.stagedDiffForAI()
+        guard !Task.isCancelled else { isGenerating = false; return }
+        guard !diff.isEmpty else { generateError = "Nothing staged to describe."; isGenerating = false; return }
+        let prompt = PromptBuilder.build(stat: stat, diff: diff, limit: workspace.config.settings.diffCharLimit)
+        // Cloud providers see the raw diff; repos not restricted to Local AI still deserve a
+        // heads-up before something secret-shaped leaves the machine. `localAIOnly` repos
+        // never reach here with a non-local provider (blocked above).
+        if !provider.isLocal {
+            // Added lines per file, minus files the user excluded; `scan` still catches a secret
+            // only in removed/context lines (no file to show, but it's in the diff being sent).
+            let all = SecretScanner.findings(inDiff: diff)
+            let shown = repo.withoutIgnoredSecrets(all)
+            let labels = all.isEmpty ? SecretScanner.scan(diff) : Array(Set(shown.map(\.label))).sorted()
+            if !labels.isEmpty {
+                isGenerating = false
+                pendingSecretWarning = (labels, shown.map { "\($0.path): \($0.label)" }, provider, prompt)
+                return
+            }
+        }
+        await send(prompt, to: provider, deliver: deliver)
+    }
+
+    /// The user agreed to send the secret-shaped diff anyway.
+    func confirmSecretWarning(deliver: (@MainActor (CommitMessage) -> Void)? = nil) {
+        guard let pending = pendingSecretWarning else { return }
+        pendingSecretWarning = nil
+        isGenerating = true
+        generateTask = Task { await send(pending.prompt, to: pending.provider, deliver: deliver) }
+    }
+
+    private func send(_ prompt: String, to provider: any CommitMessageProvider, deliver: (@MainActor (CommitMessage) -> Void)?) async {
+        isGenerating = true
+        defer { isGenerating = false }
+        do {
+            var message = try await provider.generate(prompt: prompt)
+            if workspace?.config.settings.stripAgentTrailers == true { message = TrailerStripper.strip(message) }
+            guard !Task.isCancelled else { return }
+            if let deliver { deliver(message) } else { title = message.title; body = message.body }
+        } catch is CancellationError {
+        } catch {
+            generateError = error.localizedDescription
+        }
     }
 
     // ponytail: never evicted — one small object per repo ever shown; prune on repo removal if that grows.

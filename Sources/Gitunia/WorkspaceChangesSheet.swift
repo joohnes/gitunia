@@ -2,7 +2,8 @@ import SwiftUI
 import GituniaCore
 
 /// "All Changes": every repository's uncommitted changes in one scrolling review, grouped
-/// repository → file, with the diffs inline. Diffs load only as their file scrolls into view
+/// repository → file, with the diffs inline, next to a commit column for committing several
+/// repositories at once (`WorkspaceCommitPanel`). Diffs load only as their file scrolls into view
 /// (the stack is lazy) and are cached per `workingTreeVersion`, so a workspace with hundreds of
 /// changed files opens instantly and an agent's next write reloads only what it touched.
 struct WorkspaceChangesSheet: View {
@@ -48,12 +49,17 @@ struct WorkspaceChangesSheet: View {
                                        description: Text("Every repository in this workspace is clean."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                WorkspaceDiffList(groups: visible, model: model, onOpenFile: open)
+                HSplitView {
+                    WorkspaceDiffList(groups: visible, model: model, onOpenFile: open)
+                        .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+                    WorkspaceCommitPanel(workspace: workspace, repos: visible.map(\.repo), model: model)
+                        .frame(minWidth: 300, idealWidth: 380, maxWidth: 560, maxHeight: .infinity)
+                }
             }
             Divider()
             footer(visible)
         }
-        .frame(minWidth: 860, idealWidth: 1100, maxWidth: .infinity, minHeight: 560, idealHeight: 780, maxHeight: .infinity)
+        .frame(minWidth: 860, idealWidth: 1240, maxWidth: .infinity, minHeight: 560, idealHeight: 780, maxHeight: .infinity)
     }
 
     private func open(_ repo: RepositoryStore, _ path: String) {
@@ -142,6 +148,23 @@ final class WorkspaceReviewModel {
     var collapsedFiles: Set<String> = []
     /// Files whose diff is shown past `previewLines`.
     var fullyExpanded: Set<String> = []
+
+    // Commit column (`WorkspaceCommitPanel`).
+    /// Checked repositories. Empty up front: which ones get committed is the user's call.
+    var selected: Set<URL> = []
+    var isCommitting = false
+    var commitProgress: String?
+    @ObservationIgnored var generateAllTask: Task<Void, Never>?
+
+    /// The commit gate found something in at least one checked repository; waiting on the user.
+    struct PendingGate {
+        struct Entry { let repo: RepositoryStore; let report: CommitGate.Report }
+        let reports: [Entry]
+        /// Notes for repositories already left out (nothing to commit).
+        let skipped: [String]
+        let push: Bool
+    }
+    var pendingGate: PendingGate?
 
     struct Loaded { let version: Int; let diff: FileDiff? }
     private(set) var diffs: [String: Loaded] = [:]
